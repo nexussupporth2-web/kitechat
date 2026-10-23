@@ -1,0 +1,38 @@
+# Render Blueprint. In Render: New + -> Blueprint -> pick this GitHub repo.
+# Values marked `sync: false` are asked for once in the dashboard (they are secrets, never commit them).
+services:
+  - type: web
+    name: kitechat
+    runtime: node
+    plan: free
+    region: singapore          # closest Render region to India
+    branch: main
+    autoDeploy: true           # redeploy on every push to main
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: 22.12.0
+      - key: NODE_ENV
+        value: production
+      - key: AUTH_SECRET
+        generateValue: true    # Render creates a long random value for you
+
+      # Cloudflare R2 (see docs/SETUP.md). Stores accounts, messages, stories, reels, shared files.
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        value: kitechat
+
+      # Optional TURN relay so calls work on strict networks / mobile data:
+      # - key: TURN_URLS
+      #   value: turn:your-turn-host:3478,turns:your-turn-host:5349
+      # - key: TURN_USERNAME
+      #   sync: false
+      # - key: TURN_CREDENTIAL
+      #   sync: false
