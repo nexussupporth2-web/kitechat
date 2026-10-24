@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Download, FileText, MessageSquare, Paperclip, Phone, Video } from 'lucide-react';
+import { ArrowLeft, Download, FileText, Image as ImageIcon, MessageSquare, Paperclip, Phone, Video, X } from 'lucide-react';
 import KiteIcon from './KiteIcon.tsx';
 import { formatBytes } from './api.ts';
 import { phaseLabel, type Phase, type ProgressFn } from './media.ts';
@@ -22,14 +22,50 @@ interface Props {
   onReact: (messageId: string, emoji: string) => void;
   onCall: (type: 'audio' | 'video') => void;
   onBack: () => void;
+  wallpaperUrl: string;
+  onSetWallpaper: (file: File) => Promise<void>;
+  onResetWallpaper: () => Promise<void>;
 }
 
-export default function Chat({ me, friend, messages, friendTyping, callDisabled, callHint, filesEnabled, onSendFile, onDownload, onSend, onTyping, onReact, onCall, onBack }: Props) {
+export default function Chat({ me, friend, messages, friendTyping, callDisabled, callHint, filesEnabled, onSendFile, onDownload, onSend, onTyping, onReact, onCall, onBack, wallpaperUrl, onSetWallpaper, onResetWallpaper }: Props) {
   const [input, setInput] = useState('');
   const [progress, setProgress] = useState<{ phase: Phase; p: number } | null>(null);
   const [fileError, setFileError] = useState('');
   const [downloading, setDownloading] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const wallInput = useRef<HTMLInputElement>(null);
+  const [wallOpen, setWallOpen] = useState(false);
+  const [wallBusy, setWallBusy] = useState(false);
+  const [wallError, setWallError] = useState('');
+
+  const changeWallpaper = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setWallError('');
+    setWallBusy(true);
+    try {
+      await onSetWallpaper(file);
+      setWallOpen(false);
+    } catch (err) {
+      setWallError(err instanceof Error ? err.message : 'Could not change the wallpaper');
+    } finally {
+      setWallBusy(false);
+    }
+  };
+
+  const useDefaultWallpaper = async () => {
+    setWallError('');
+    setWallBusy(true);
+    try {
+      await onResetWallpaper();
+      setWallOpen(false);
+    } catch (err) {
+      setWallError(err instanceof Error ? err.message : 'Could not reset the wallpaper');
+    } finally {
+      setWallBusy(false);
+    }
+  };
 
   const pickFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -95,7 +131,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
 
   const dot = (on: boolean) => `w-1.5 h-1.5 rounded-full ${on ? 'bg-emerald-500' : 'bg-slate-700'}`;
   const iconBtn =
-    'w-10 h-10 rounded-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-white flex items-center justify-center transition-colors shadow-lg shadow-emerald-600/20';
+    'w-10 h-10 rounded-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-500 disabled:cursor-not-allowed text-accent-ink flex items-center justify-center transition-colors shadow-lg shadow-emerald-600/20';
 
   return (
     <div className="flex-1 flex flex-col h-full min-h-0">
@@ -122,6 +158,9 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button onClick={() => { setWallError(''); setWallOpen(true); }} className="w-10 h-10 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center border border-slate-700" title="Chat wallpaper" aria-label="Chat wallpaper">
+            <ImageIcon className="w-4 h-4" />
+          </button>
           <button onClick={() => onCall('audio')} disabled={callDisabled} className={iconBtn} title={callHint || 'Audio call'}>
             <Phone className="w-4 h-4" />
           </button>
@@ -131,7 +170,13 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-3" onClick={() => setPickerFor(null)}>
+      <div
+        className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-3 chat-wallpaper"
+        style={{
+          backgroundImage: `linear-gradient(color-mix(in srgb, var(--color-slate-950) 40%, transparent), color-mix(in srgb, var(--color-slate-950) 40%, transparent)), url("${wallpaperUrl}")`
+        }}
+        onClick={() => setPickerFor(null)}
+      >
         {convo.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-slate-500 text-center">
             <MessageSquare className="w-12 h-12 mb-3 opacity-30" />
@@ -152,7 +197,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
                       setPickerFor(pickerFor === msg.id ? null : msg.id);
                     }}
                     className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow cursor-pointer break-words whitespace-pre-wrap ${
-                      mine ? 'bg-cyan-600 text-white rounded-br-sm' : 'bg-slate-900 border border-slate-800 text-slate-200 rounded-bl-sm'
+                      mine ? 'bg-cyan-600 text-accent-ink rounded-br-sm' : 'bg-slate-900 border border-slate-800 text-slate-200 rounded-bl-sm'
                     }`}
                   >
                     {msg.file ? (
@@ -173,7 +218,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
                               void download(msg.file!.id);
                             }}
                             disabled={downloading === msg.file.id}
-                            className="shrink-0 px-2.5 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 disabled:opacity-60 text-slate-950 text-xs font-semibold flex items-center gap-1"
+                            className="shrink-0 px-2.5 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 disabled:opacity-60 text-accent-ink text-xs font-semibold flex items-center gap-1"
                           >
                             <Download className="w-3.5 h-3.5" />
                             {downloading === msg.file.id ? 'Saving…' : 'Save'}
@@ -245,6 +290,29 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
         </div>
       )}
 
+      {wallOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-4" onClick={() => !wallBusy && setWallOpen(false)}>
+          <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-2xl relative" onClick={e => e.stopPropagation()}>
+            <button onClick={() => setWallOpen(false)} disabled={wallBusy} className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-slate-400" aria-label="Close">
+              <X className="w-4 h-4" />
+            </button>
+            <h3 className="text-base font-bold text-white mb-1">Chat wallpaper</h3>
+            <p className="text-xs text-slate-400 mb-4">Your friends will see the picture you choose in their chat with you. The most recent change by either of you is used.</p>
+            <div className="h-40 rounded-2xl border border-slate-800 mb-4 chat-wallpaper" style={{ backgroundImage: `url("${wallpaperUrl}")` }} />
+            {wallError && <div role="alert" className="mb-3 text-xs text-rose-400">{wallError}</div>}
+            <input ref={wallInput} type="file" accept="image/*" className="hidden" onChange={changeWallpaper} />
+            <div className="flex gap-3">
+              <button onClick={useDefaultWallpaper} disabled={wallBusy} className="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-60 text-white text-sm font-medium border border-slate-700">
+                Use kites
+              </button>
+              <button onClick={() => wallInput.current?.click()} disabled={wallBusy} className="flex-1 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-60 text-accent-ink text-sm font-semibold">
+                {wallBusy ? 'Please wait…' : 'Choose photo'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <form onSubmit={submit} className="p-3 sm:p-4 border-t border-slate-800 bg-slate-900/40 flex gap-3">
         {filesEnabled && (
           <>
@@ -269,7 +337,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
           placeholder={`Message ${friend.name}…`}
           className="flex-1 min-w-0 bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-cyan-500"
         />
-        <button type="submit" className="w-11 h-11 bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded-xl flex items-center justify-center shrink-0" aria-label="Send">
+        <button type="submit" className="w-11 h-11 bg-cyan-500 hover:bg-cyan-400 text-accent-ink rounded-xl flex items-center justify-center shrink-0" aria-label="Send">
           <KiteIcon className="w-6 h-6" />
         </button>
       </form>

@@ -1,5 +1,87 @@
 @import "tailwindcss";
 
+/*
+  KiteChat pastel theme. The whole app uses Tailwind's "slate / cyan / emerald / rose / indigo"
+  colours, so the theme is made by re-defining those colours below.
+  Dark mode = soft twilight lavender.  Light mode = warm milky pastel.  It follows the phone setting.
+*/
+@theme {
+  --color-accent-ink: #2b2548; /* dark text that sits on pastel buttons */
+  --color-fixed-white: #ffffff; /* text on top of photos / video, never changes */
+}
+
+:root {
+  color-scheme: dark;
+
+  /* surfaces and text (dark) */
+  --color-white: #f7f5ff;
+  --color-slate-50: #f5f3ff;
+  --color-slate-100: #ebeaf7;
+  --color-slate-200: #dcdaf0;
+  --color-slate-300: #c9c7e3;
+  --color-slate-400: #a9a6cc;
+  --color-slate-500: #8582ac;
+  --color-slate-600: #5f5c8c;
+  --color-slate-700: #454171;
+  --color-slate-800: #302d55;
+  --color-slate-900: #232043;
+  --color-slate-950: #191733;
+
+  /* pastel accents (dark) */
+  --color-cyan-300: #b5ecf7;
+  --color-cyan-400: #92dff0;
+  --color-cyan-500: #86d4e8;
+  --color-cyan-600: #7fc8dd;
+  --color-emerald-400: #8fe3bf;
+  --color-emerald-500: #7bd9b0;
+  --color-emerald-600: #84dcb5;
+  --color-rose-400: #ff9db8;
+  --color-rose-500: #f58aa9;
+  --color-rose-600: #f69ab5;
+  --color-indigo-400: #aaa8f2;
+  --color-indigo-500: #a3a1ee;
+  --color-indigo-600: #9996e6;
+  --color-amber-400: #ffd28a;
+  --color-amber-500: #ffd28a;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+
+    /* surfaces and text (light): the scale is flipped */
+    --color-white: #2b2548;
+    --color-slate-50: #2b2548;
+    --color-slate-100: #342e57;
+    --color-slate-200: #453e6c;
+    --color-slate-300: #5a5282;
+    --color-slate-400: #6c6492;
+    --color-slate-500: #8a82ad;
+    --color-slate-600: #b3a9d3;
+    --color-slate-700: #d6cdea;
+    --color-slate-800: #e6def5;
+    --color-slate-900: #f3eefb;
+    --color-slate-950: #fcf9ff;
+
+    /* pastel accents (light): text-sized ones are a bit deeper so they stay readable */
+    --color-cyan-300: #3a9bb8;
+    --color-cyan-400: #2b8aa8;
+    --color-cyan-500: #9adcee;
+    --color-cyan-600: #a9e2f1;
+    --color-emerald-400: #2f9f78;
+    --color-emerald-500: #8ddcb8;
+    --color-emerald-600: #9ae2c2;
+    --color-rose-400: #cf4f78;
+    --color-rose-500: #f4a0b8;
+    --color-rose-600: #f8b0c4;
+    --color-indigo-400: #5d5ac4;
+    --color-indigo-500: #bcbaf5;
+    --color-indigo-600: #b3b0f0;
+    --color-amber-400: #e8a53a;
+    --color-amber-500: #ffd99a;
+  }
+}
+
 html,
 body,
 #root {
@@ -7,5 +89,12 @@ body,
 }
 
 body {
-  background: #020617;
+  background: var(--color-slate-950);
+  color: var(--color-slate-100);
+}
+
+/* Chat wallpaper: the picture is dimmed a little so messages stay easy to read in both modes. */
+.chat-wallpaper {
+  background-size: cover;
+  background-position: center;
 }

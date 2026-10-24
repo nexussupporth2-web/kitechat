@@ -30,14 +30,14 @@ export default function Auth({ onAuthed }: { onAuthed: (user: User) => void }) {
   const input =
     'w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-cyan-500';
   const tab = (active: boolean) =>
-    `flex-1 py-2 text-xs font-semibold rounded-lg transition-colors ${active ? 'bg-cyan-500 text-slate-950 shadow' : 'text-slate-400 hover:text-white'}`;
+    `flex-1 py-2 text-xs font-semibold rounded-lg transition-colors ${active ? 'bg-cyan-500 text-accent-ink shadow' : 'text-slate-400 hover:text-white'}`;
 
   return (
     <div className="min-h-full bg-slate-950 text-slate-100 flex items-center justify-center p-4">
       <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-8 shadow-2xl">
         <div className="flex items-center justify-center mb-6">
           <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-cyan-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-cyan-500/25">
-            <Radio className="w-6 h-6 text-white" />
+            <Radio className="w-6 h-6 text-accent-ink" />
           </div>
         </div>
         <h1 className="text-2xl font-bold text-center text-white mb-2">KiteChat</h1>
@@ -93,7 +93,7 @@ export default function Auth({ onAuthed }: { onAuthed: (user: User) => void }) {
           <button
             type="submit"
             disabled={busy}
-            className="w-full h-12 rounded-xl bg-gradient-to-r from-cyan-500 to-indigo-600 hover:from-cyan-400 hover:to-indigo-500 disabled:opacity-60 text-white font-semibold text-sm shadow-lg shadow-cyan-500/25 transition-all mt-2"
+            className="w-full h-12 rounded-xl bg-gradient-to-r from-cyan-500 to-indigo-600 hover:from-cyan-400 hover:to-indigo-500 disabled:opacity-60 text-accent-ink font-semibold text-sm shadow-lg shadow-cyan-500/25 transition-all mt-2"
           >
             {busy ? 'Please wait…' : view === 'register' ? 'Create Account' : 'Sign In'}
           </button>

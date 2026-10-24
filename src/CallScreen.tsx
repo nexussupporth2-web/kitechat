@@ -31,7 +31,7 @@ export default function CallScreen({ call, localStream, remoteStream, micOn, cam
   const statusText =
     call.status === 'ringing' ? `Calling ${call.peerName}…` : call.status === 'connecting' ? 'Connecting…' : fmt(seconds);
   const round = (on: boolean) =>
-    `w-12 h-12 rounded-full flex items-center justify-center transition-colors ${on ? 'bg-slate-800 hover:bg-slate-700 text-white border border-slate-700' : 'bg-rose-600 text-white'}`;
+    `w-12 h-12 rounded-full flex items-center justify-center transition-colors ${on ? 'bg-slate-800 hover:bg-slate-700 text-accent-ink border border-slate-700' : 'bg-rose-600 text-accent-ink'}`;
 
   return (
     <div className="fixed inset-0 z-40 bg-slate-950 flex flex-col items-center justify-center p-3 sm:p-4">
@@ -56,7 +56,7 @@ export default function CallScreen({ call, localStream, remoteStream, micOn, cam
         )}
 
         {isVideo && remoteStream && (
-          <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-black/50 backdrop-blur-md px-3 py-1 rounded-full text-xs font-mono text-white">
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-black/50 backdrop-blur-md px-3 py-1 rounded-full text-xs font-mono text-fixed-white">
             {statusText}
           </div>
         )}
@@ -83,7 +83,7 @@ export default function CallScreen({ call, localStream, remoteStream, micOn, cam
           )}
           <button
             onClick={onEnd}
-            className="px-5 h-12 rounded-full bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs flex items-center gap-2 shadow-lg shadow-rose-600/30"
+            className="px-5 h-12 rounded-full bg-rose-600 hover:bg-rose-500 text-accent-ink font-semibold text-xs flex items-center gap-2 shadow-lg shadow-rose-600/30"
             aria-label="End call"
           >
             <PhoneOff className="w-4 h-4" />

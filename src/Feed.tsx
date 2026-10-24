@@ -97,10 +97,10 @@ export default function Feed({ me }: { me: string }) {
         {error && <div role="alert" className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-400 text-xs">{error}</div>}
 
         <div className="flex items-center gap-2">
-          <button onClick={() => setComposeKind('story')} className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-semibold">
+          <button onClick={() => setComposeKind('story')} className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-accent-ink text-xs font-semibold">
             <Plus className="w-4 h-4" /> Story
           </button>
-          <button onClick={() => setComposeKind('reel')} className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-white text-xs font-semibold">
+          <button onClick={() => setComposeKind('reel')} className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-accent-ink text-xs font-semibold">
             <Film className="w-4 h-4" /> Reel
           </button>
           {cfg && (
@@ -226,8 +226,8 @@ function StoryViewer({ stories, index, me, onIndex, onClose, onDelete }: {
           <div className="flex gap-1 mb-3">
             {stories.map((_, i) => <span key={i} className={`h-0.5 flex-1 rounded-full ${i <= index ? 'bg-white' : 'bg-white/30'}`} />)}
           </div>
-          <div className="flex items-center justify-between text-white text-sm">
-            <span className="font-semibold">{story.ownerName}{left ? <span className="text-white/60 font-normal text-xs"> · {left}h left</span> : null}</span>
+          <div className="flex items-center justify-between text-fixed-white text-sm">
+            <span className="font-semibold">{story.ownerName}{left ? <span className="text-fixed-white/60 font-normal text-xs"> · {left}h left</span> : null}</span>
             <div className="flex items-center gap-3">
               {story.ownerId === me && <button onClick={() => onDelete(story)} aria-label="Delete story"><Trash2 className="w-5 h-5" /></button>}
               <button onClick={onClose} aria-label="Close"><X className="w-6 h-6" /></button>
@@ -246,12 +246,12 @@ function StoryViewer({ stories, index, me, onIndex, onClose, onDelete }: {
           <img key={story.id} src={story.url} alt="" className="w-full h-full object-contain" />
         )}
 
-        {story.caption && <p className="absolute bottom-6 inset-x-4 text-center text-white text-sm bg-black/50 rounded-xl px-3 py-2">{story.caption}</p>}
+        {story.caption && <p className="absolute bottom-6 inset-x-4 text-center text-fixed-white text-sm bg-black/50 rounded-xl px-3 py-2">{story.caption}</p>}
 
         {index > 0 && (
-          <button onClick={() => onIndex(index - 1)} className="absolute left-2 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-black/50 text-white flex items-center justify-center" aria-label="Previous"><ChevronLeft className="w-5 h-5" /></button>
+          <button onClick={() => onIndex(index - 1)} className="absolute left-2 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-black/50 text-fixed-white flex items-center justify-center" aria-label="Previous"><ChevronLeft className="w-5 h-5" /></button>
         )}
-        <button onClick={next} className="absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-black/50 text-white flex items-center justify-center" aria-label="Next"><ChevronRight className="w-5 h-5" /></button>
+        <button onClick={next} className="absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 rounded-full bg-black/50 text-fixed-white flex items-center justify-center" aria-label="Next"><ChevronRight className="w-5 h-5" /></button>
       </div>
     </div>
   );

@@ -9,6 +9,7 @@ import Feed from './Feed.tsx';
 import { downloadSharedFile, sendFileToFriend, type MediaConfig } from './media.ts';
 import { enableNotifications, notificationState, notify, playMessageSound, registerSW, startRinging, stopRinging, unlockAudioOnFirstTap } from './notify.ts';
 import { useCall } from './useCall.ts';
+import { DEFAULT_WALLPAPER, loadChatWallpaper, resetMyWallpaper, setMyWallpaper } from './wallpaper.ts';
 import type { ChatMessage, Friend, User } from './types.ts';
 
 /** Shows a friendly screen instead of a blank page if something crashes, and recovers by itself. */
@@ -32,7 +33,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean
     return (
       <div className="min-h-full bg-slate-950 text-slate-100 flex flex-col items-center justify-center text-center p-8 gap-4">
         <p className="text-sm text-slate-300">Something went wrong. Tap the button to continue.</p>
-        <button onClick={() => window.location.reload()} className="px-5 py-2.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded-xl text-sm font-semibold">
+        <button onClick={() => window.location.reload()} className="px-5 py-2.5 bg-cyan-500 hover:bg-cyan-400 text-accent-ink rounded-xl text-sm font-semibold">
           Reload
         </button>
       </div>
@@ -115,6 +116,7 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [tab, setTab] = useState<'chats' | 'feed'>('chats');
   const [mediaCfg, setMediaCfg] = useState<MediaConfig | null>(null);
   const [connected, setConnected] = useState(true);
+  const [wallpaperUrl, setWallpaperUrl] = useState(DEFAULT_WALLPAPER);
   const [notifState, setNotifState] = useState(notificationState());
   const filesEnabled = !!mediaCfg?.enabled;
 
@@ -139,6 +141,15 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
       if (e instanceof ApiError && e.status === 401) onLogout();
     }
   }, [onLogout]);
+
+  const refreshWallpaper = useCallback(() => {
+    const id = selectedRef.current;
+    if (id) void loadChatWallpaper(id).then(url => selectedRef.current === id && setWallpaperUrl(url));
+  }, []);
+  useEffect(() => {
+    setWallpaperUrl(DEFAULT_WALLPAPER);
+    refreshWallpaper();
+  }, [selectedId, refreshWallpaper]);
 
   useEffect(() => {
     unlockAudioOnFirstTap();
@@ -172,6 +183,7 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
       if (document.visibilityState === 'hidden') return;
       if (!s.connected) s.connect();
       else void loadData();
+      refreshWallpaper();
     };
     document.addEventListener('visibilitychange', wake);
     window.addEventListener('online', wake);
@@ -192,6 +204,7 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
         } else playMessageSound();
       }
     });
+    s.on('wallpaper-updated', () => refreshWallpaper());
     s.on('message-updated', (msg: ChatMessage) => setMessages(prev => prev.map(m => (m.id === msg.id ? msg : m))));
     s.on('message-status-update', ({ messageIds, status }: { messageIds: string[]; status: ChatMessage['status'] }) => {
       const ids = new Set(messageIds);
@@ -215,7 +228,7 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
       s.disconnect();
       setSocket(null);
     };
-  }, [user.userId, loadData, onLogout]);
+  }, [user.userId, loadData, onLogout, refreshWallpaper]);
 
   const selectFriend = (f: Friend) => {
     setSelectedId(f.userId);
@@ -263,7 +276,7 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
   return (
     <div className="h-full bg-slate-950 text-slate-100 flex flex-col font-sans">
       {!connected && (
-        <div role="status" className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] bg-amber-500/90 text-slate-950 text-xs font-semibold px-4 py-2 rounded-full shadow-xl">
+        <div role="status" className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] bg-amber-500/90 text-accent-ink text-xs font-semibold px-4 py-2 rounded-full shadow-xl">
           Reconnecting…
         </div>
       )}
@@ -284,7 +297,7 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
             <p className="text-sm text-slate-400 mb-6"><strong className="text-white">{calls.incoming.callerName}</strong> is calling you.</p>
             <div className="flex gap-3">
               <button onClick={calls.declineCall} className="flex-1 py-3 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 text-rose-400 font-semibold text-sm border border-rose-500/30">Decline</button>
-              <button onClick={calls.acceptCall} className="flex-1 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-sm">Accept</button>
+              <button onClick={calls.acceptCall} className="flex-1 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-accent-ink font-semibold text-sm">Accept</button>
             </div>
           </div>
         </div>
@@ -309,7 +322,7 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
       >
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-cyan-500 to-indigo-600 flex items-center justify-center">
-            <Radio className="w-5 h-5 text-white" />
+            <Radio className="w-5 h-5 text-accent-ink" />
           </div>
           <span className="hidden sm:inline text-lg font-bold tracking-tight text-white">KiteChat</span>
         </div>
@@ -319,7 +332,7 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
               <button
                 key={t}
                 onClick={() => setTab(t)}
-                className={`whitespace-nowrap px-3 py-1 text-xs font-semibold rounded-lg transition-colors ${tab === t ? 'bg-cyan-500 text-slate-950' : 'text-slate-400 hover:text-white'}`}
+                className={`whitespace-nowrap px-3 py-1 text-xs font-semibold rounded-lg transition-colors ${tab === t ? 'bg-cyan-500 text-accent-ink' : 'text-slate-400 hover:text-white'}`}
               >
                 {t === 'chats' ? 'Chats' : 'Stories & Reels'}
               </button>
@@ -353,7 +366,7 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
         <aside className={`${selected ? 'hidden md:flex' : 'flex'} w-full md:w-80 shrink-0 bg-slate-900 border-r border-slate-800 flex-col`}>
           <div className="p-4 border-b border-slate-800 flex items-center justify-between">
             <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Friends ({friends.length})</span>
-            <button onClick={() => { setAddOpen(true); setAddError(''); }} className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded-lg">
+            <button onClick={() => { setAddOpen(true); setAddError(''); }} className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium bg-cyan-500 hover:bg-cyan-400 text-accent-ink rounded-lg">
               <UserPlus className="w-3.5 h-3.5" />
               <span>Add</span>
             </button>
@@ -386,7 +399,7 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
                       </div>
                     </div>
                     {n > 0 ? (
-                      <span className="min-w-5 h-5 px-1.5 rounded-full bg-emerald-500 text-slate-950 text-[11px] font-bold flex items-center justify-center">{n}</span>
+                      <span className="min-w-5 h-5 px-1.5 rounded-full bg-emerald-500 text-accent-ink text-[11px] font-bold flex items-center justify-center">{n}</span>
                     ) : (
                       <ChevronRight className="w-4 h-4 text-slate-500" />
                     )}
@@ -418,6 +431,16 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
               onReact={(messageId, reaction) => socket?.emit('message-reaction', { messageId, reaction })}
               onCall={type => calls.startCall(selected, type)}
               onBack={() => setSelectedId(null)}
+              wallpaperUrl={wallpaperUrl}
+              onSetWallpaper={async file => {
+                if (!filesEnabled) throw new Error('Wallpapers need file storage, which is not set up yet');
+                await setMyWallpaper(file);
+                refreshWallpaper();
+              }}
+              onResetWallpaper={async () => {
+                await resetMyWallpaper();
+                refreshWallpaper();
+              }}
             />
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center text-center p-8">
@@ -450,7 +473,7 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
               placeholder="e.g. SAM456"
               className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm font-mono tracking-wider text-white focus:outline-none focus:border-cyan-500"
             />
-            <button type="submit" className="w-full h-11 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold rounded-xl text-sm">Add to friends</button>
+            <button type="submit" className="w-full h-11 bg-cyan-500 hover:bg-cyan-400 text-accent-ink font-semibold rounded-xl text-sm">Add to friends</button>
           </form>
         </Modal>
       )}
