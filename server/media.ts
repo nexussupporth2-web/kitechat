@@ -16,6 +16,7 @@ export const LIMITS = {
   story: { imageBytes: 1 * MB, videoBytes: 15 * MB, audioBytes: 5 * MB, maxMediaSec: 30, ttlMs: 24 * HOUR },
   reel: { videoBytes: 15 * MB, maxVideoSec: 30 },
   share: { bytes: 50 * MB, mediaOriginalBytes: 300 * MB, pendingPerSender: 5, ttlMs: 24 * HOUR },
+  wallpaperBytes: 1 * MB,
   quotaBytes: 200 * MB
 };
 
@@ -99,6 +100,11 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline }: Deps) {
       if (!(mime in VIDEO_TYPES)) return res.status(400).json({ error: 'Reels must be an MP4, WebM or MOV video' });
       if (size > LIMITS.reel.videoBytes) return res.status(400).json({ error: `Too large even after compression (limit ${LIMITS.reel.videoBytes / MB} MB)` });
       key = `reels/${me.userId}/${crypto.randomUUID()}.${VIDEO_TYPES[mime]}`;
+    } else if (kind === 'wallpaper') {
+      const ext = IMAGE_TYPES[mime];
+      if (!ext) return res.status(400).json({ error: 'Wallpaper must be a JPG, PNG or WebP photo' });
+      if (size > LIMITS.wallpaperBytes) return res.status(400).json({ error: 'Wallpaper is too large even after compression' });
+      key = `wallpapers/${me.userId}/${crypto.randomUUID()}.${ext}`;
     } else if (kind === 'share') {
       if (typeof recipientId !== 'string' || !areFriends(me.userId, recipientId)) {
         return res.status(400).json({ error: 'You can only send files to friends' });
@@ -200,6 +206,65 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline }: Deps) {
     const post = data.posts.find(p => p.id === req.params.id);
     if (!post || post.ownerId !== me.userId) return res.status(404).json({ error: 'Not found' });
     await deletePost(post);
+    res.json({ ok: true });
+  });
+
+  // ---------- chat wallpaper ----------
+  // Every user can pick one wallpaper. In a chat, the picture is the one that was changed most recently
+  // by either person, so both phones always show the same image. No pick = the kite default.
+
+  const notifyWallpaper = (me: User) => {
+    for (const id of [me.userId, ...me.friends]) io.to(`user:${id}`).emit('wallpaper-updated', { userId: me.userId });
+  };
+
+  router.get('/wallpaper/:friendId', requireAuth, async (req, res) => {
+    const me = res.locals.user as User;
+    const friend = data.users[String(req.params.friendId)];
+    if (!friend || (friend.userId !== me.userId && !areFriends(me.userId, friend.userId))) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+    const best = [me, friend]
+      .filter(u => u.wallpaper)
+      .sort((a, b) => b.wallpaper!.at - a.wallpaper!.at)[0];
+    if (!best || !r2Enabled) return res.json({ url: null, by: null, at: 0 });
+    try {
+      res.json({ url: await signGet(best.wallpaper!.key, { expiresIn: HOUR }), by: best.userId, at: best.wallpaper!.at });
+    } catch (e) {
+      console.error('wallpaper url failed', e);
+      res.json({ url: null, by: null, at: 0 });
+    }
+  });
+
+  router.post('/wallpaper', requireAuth, needStorage, async (req, res) => {
+    const me = res.locals.user as User;
+    const { key } = req.body ?? {};
+    if (typeof key !== 'string' || !key.startsWith(`wallpapers/${me.userId}/`)) return res.status(400).json({ error: 'Invalid request' });
+    try {
+      const info = await head(key);
+      if (!info) return res.status(400).json({ error: 'Upload not found. Please try again.' });
+      if (info.size > LIMITS.wallpaperBytes || !(info.type in IMAGE_TYPES)) {
+        await remove(key).catch(() => {});
+        return res.status(413).json({ error: 'Wallpaper is too large' });
+      }
+      const old = me.wallpaper?.key;
+      me.wallpaper = { key, at: Date.now() };
+      save();
+      if (old && old !== key) await remove(old).catch(() => {});
+      notifyWallpaper(me);
+      res.json({ ok: true });
+    } catch (e) {
+      console.error('wallpaper failed', e);
+      res.status(500).json({ error: 'Could not set the wallpaper' });
+    }
+  });
+
+  router.delete('/wallpaper', requireAuth, async (_req, res) => {
+    const me = res.locals.user as User;
+    const old = me.wallpaper?.key;
+    delete me.wallpaper;
+    save();
+    if (old && r2Enabled) await remove(old).catch(() => {});
+    notifyWallpaper(me);
     res.json({ ok: true });
   });
 

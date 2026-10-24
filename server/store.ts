@@ -10,6 +10,8 @@ export interface User {
   passwordHash: string;
   friends: string[];
   createdAt: number;
+  /** Chat wallpaper picked by this user (an image in storage). */
+  wallpaper?: { key: string; at: number };
 }
 
 export type MsgStatus = 'sent' | 'received' | 'read';
