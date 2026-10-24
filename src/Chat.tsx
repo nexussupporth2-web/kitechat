@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Download, FileText, MessageSquare, Paperclip, Phone, Send, Video } from 'lucide-react';
+import { ArrowLeft, Download, FileText, MessageSquare, Paperclip, Phone, Video } from 'lucide-react';
+import KiteIcon from './KiteIcon.tsx';
 import { formatBytes } from './api.ts';
 import { phaseLabel, type Phase, type ProgressFn } from './media.ts';
 import type { ChatMessage, Friend } from './types.ts';
@@ -269,9 +270,9 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
           className="flex-1 min-w-0 bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-cyan-500"
         />
         <button type="submit" className="w-11 h-11 bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded-xl flex items-center justify-center shrink-0" aria-label="Send">
-          <Send className="w-4 h-4" />
+          <KiteIcon className="w-6 h-6" />
         </button>
       </form>
     </div>
   );
-}
+      }
