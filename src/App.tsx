@@ -1,12 +1,13 @@
 import { Component, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { io, type Socket } from 'socket.io-client';
-import { Check, ChevronRight, Copy, LogOut, Phone, Radio, Sparkles, UserPlus, Users, Video, X } from 'lucide-react';
+import { Bell, Check, ChevronRight, Copy, LogOut, Phone, Radio, Sparkles, UserPlus, Users, Video, X } from 'lucide-react';
 import { api, ApiError, getToken, loadToken, setToken } from './api.ts';
 import Auth from './Auth.tsx';
 import Chat from './Chat.tsx';
 import CallScreen from './CallScreen.tsx';
 import Feed from './Feed.tsx';
 import { downloadSharedFile, sendFileToFriend, type MediaConfig } from './media.ts';
+import { enableNotifications, notificationState, notify, playMessageSound, registerSW, startRinging, stopRinging, unlockAudioOnFirstTap } from './notify.ts';
 import { useCall } from './useCall.ts';
 import type { ChatMessage, Friend, User } from './types.ts';
 
@@ -114,10 +115,13 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [tab, setTab] = useState<'chats' | 'feed'>('chats');
   const [mediaCfg, setMediaCfg] = useState<MediaConfig | null>(null);
   const [connected, setConnected] = useState(true);
+  const [notifState, setNotifState] = useState(notificationState());
   const filesEnabled = !!mediaCfg?.enabled;
 
   const selectedRef = useRef<string | null>(null);
   selectedRef.current = selectedId;
+  const friendsRef = useRef<Friend[]>([]);
+  friendsRef.current = friends;
   const typingTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   const calls = useCall(socket);
@@ -135,6 +139,11 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
       if (e instanceof ApiError && e.status === 401) onLogout();
     }
   }, [onLogout]);
+
+  useEffect(() => {
+    unlockAudioOnFirstTap();
+    if (notificationState() === 'granted') void registerSW();
+  }, []);
 
   useEffect(() => {
     api<MediaConfig>('/api/media/config')
@@ -174,8 +183,13 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
     s.on('friend-added', (f: Friend) => setFriends(prev => [...prev.filter(x => x.userId !== f.userId), f]));
     s.on('chat-message', (msg: ChatMessage) => {
       setMessages(prev => (prev.some(m => m.id === msg.id) ? prev : [...prev, msg]));
-      if (msg.senderId !== user.userId && selectedRef.current === msg.senderId) {
-        s.emit('mark-messages-read', { friendId: msg.senderId });
+      if (msg.senderId !== user.userId) {
+        const watching = !document.hidden && selectedRef.current === msg.senderId;
+        if (watching) s.emit('mark-messages-read', { friendId: msg.senderId });
+        else if (document.hidden) {
+          const name = friendsRef.current.find(f => f.userId === msg.senderId)?.name ?? msg.senderId;
+          void notify(name, msg.file ? 'Sent you a file' : msg.message, `msg-${msg.senderId}`);
+        } else playMessageSound();
       }
     });
     s.on('message-updated', (msg: ChatMessage) => setMessages(prev => prev.map(m => (m.id === msg.id ? msg : m))));
@@ -234,6 +248,17 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
   };
 
   const inCall = !!calls.call;
+
+  // Ring (and show a system notification) for an incoming call.
+  const incomingId = calls.incoming && !inCall ? calls.incoming.callerName : null;
+  useEffect(() => {
+    if (!incomingId) return;
+    startRinging();
+    void notify('Incoming call', `${incomingId} is calling you`, 'incoming-call', true);
+    return stopRinging;
+  }, [incomingId]);
+
+  const turnOnNotifications = async () => setNotifState(await enableNotifications());
 
   return (
     <div className="h-full bg-slate-950 text-slate-100 flex flex-col font-sans">
@@ -302,6 +327,11 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
           </nav>
         )}
         <div className="flex items-center gap-2 sm:gap-3">
+          {notifState === 'default' && (
+            <button onClick={turnOnNotifications} className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center" title="Turn on notifications" aria-label="Turn on notifications">
+              <Bell className="w-4 h-4" />
+            </button>
+          )}
           <button onClick={() => setShareOpen(true)} className="px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700">
             <span className="font-mono text-cyan-400">{user.userId}</span>
           </button>
@@ -408,27 +438,4 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
 
       {addOpen && (
         <Modal onClose={() => setAddOpen(false)}>
-          <h3 className="text-lg font-bold text-white mb-1">Add friend</h3>
-          <p className="text-xs text-slate-400 mb-5">Enter your friend's User ID. You'll both see each other in your lists.</p>
-          {addError && <div role="alert" className="mb-3 p-2.5 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-400 text-xs">{addError}</div>}
-          <form onSubmit={addFriend} className="space-y-4">
-            <input
-              required
-              autoFocus
-              value={newFriendId}
-              onChange={e => setNewFriendId(e.target.value.toUpperCase())}
-              placeholder="e.g. SAM456"
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm font-mono tracking-wider text-white focus:outline-none focus:border-cyan-500"
-            />
-            <button type="submit" className="w-full h-11 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold rounded-xl text-sm">Add to friends</button>
-          </form>
-        </Modal>
-      )}
-
-      {shareOpen && (
-        <Modal onClose={() => setShareOpen(false)}>
-          <h3 className="text-lg font-bold text-white mb-1">Your User ID</h3>
-          <p className="text-xs text-slate-400 mb-5">Share this so friends can add you.</p>
-          <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 mb-5 text-center">
-            <span className="text-2xl font-mono font-bold text-cyan-400 tracking-widest block break-all">{user.userId}</span>
-            <span className="text-[11px] text-slate-400 mt-1 block">{user.nam
+          <h3 className="text-lg font-bold text-whit
