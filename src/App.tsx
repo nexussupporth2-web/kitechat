@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Component, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { Check, ChevronRight, Copy, LogOut, Phone, Radio, Sparkles, UserPlus, Users, Video, X } from 'lucide-react';
 import { api, ApiError, getToken, loadToken, setToken } from './api.ts';
@@ -10,19 +10,78 @@ import { downloadSharedFile, sendFileToFriend, type MediaConfig } from './media.
 import { useCall } from './useCall.ts';
 import type { ChatMessage, Friend, User } from './types.ts';
 
+/** Shows a friendly screen instead of a blank page if something crashes, and recovers by itself. */
+class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  private retry = () => this.setState({ failed: false });
+  componentDidMount() {
+    document.addEventListener('visibilitychange', this.onVisible);
+  }
+  componentWillUnmount() {
+    document.removeEventListener('visibilitychange', this.onVisible);
+  }
+  private onVisible = () => {
+    if (document.visibilityState === 'visible' && this.state.failed) this.retry();
+  };
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <div className="min-h-full bg-slate-950 text-slate-100 flex flex-col items-center justify-center text-center p-8 gap-4">
+        <p className="text-sm text-slate-300">Something went wrong. Tap the button to continue.</p>
+        <button onClick={() => window.location.reload()} className="px-5 py-2.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded-xl text-sm font-semibold">
+          Reload
+        </button>
+      </div>
+    );
+  }
+}
+
 export default function App() {
+  return (
+    <ErrorBoundary>
+      <Root />
+    </ErrorBoundary>
+  );
+}
+
+function Root() {
   const [user, setUser] = useState<User | null>(null);
   const [booting, setBooting] = useState(true);
 
-  // Restore a saved session.
+  // Restore a saved session. If the free server is still waking up, keep trying instead of failing.
   useEffect(() => {
-    if (!loadToken()) return setBooting(false);
-    api<{ user: User }>('/api/me')
-      .then(r => setUser(r.user))
-      .catch(e => {
-        if (e instanceof ApiError && e.status === 401) setToken(null);
-      })
-      .finally(() => setBooting(false));
+    if (!loadToken()) {
+      setBooting(false);
+      return;
+    }
+    let cancelled = false;
+    let tries = 0;
+    const attempt = () => {
+      api<{ user: User }>('/api/me')
+        .then(r => {
+          if (cancelled) return;
+          setUser(r.user);
+          setBooting(false);
+        })
+        .catch(e => {
+          if (cancelled) return;
+          if (e instanceof ApiError && e.status === 401) {
+            setToken(null);
+            setBooting(false);
+          } else if (++tries < 30) {
+            setTimeout(attempt, 3000);
+          } else {
+            setBooting(false);
+          }
+        });
+    };
+    attempt();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const logout = useCallback(() => {
@@ -30,7 +89,13 @@ export default function App() {
     setUser(null);
   }, []);
 
-  if (booting) return <div className="min-h-full bg-slate-950" />;
+  if (booting) {
+    return (
+      <div className="min-h-full bg-slate-950 text-slate-400 flex items-center justify-center text-sm">
+        Waking up KiteChat… this can take a minute.
+      </div>
+    );
+  }
   if (!user) return <Auth onAuthed={setUser} />;
   return <Messenger key={user.userId} user={user} onLogout={logout} />;
 }
@@ -48,6 +113,7 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [copied, setCopied] = useState(false);
   const [tab, setTab] = useState<'chats' | 'feed'>('chats');
   const [mediaCfg, setMediaCfg] = useState<MediaConfig | null>(null);
+  const [connected, setConnected] = useState(true);
   const filesEnabled = !!mediaCfg?.enabled;
 
   const selectedRef = useRef<string | null>(null);
@@ -82,12 +148,25 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
     setSocket(s);
 
     s.on('connect', () => {
+      setConnected(true);
       loadData(); // also resyncs after a reconnect
       if (selectedRef.current) s.emit('mark-messages-read', { friendId: selectedRef.current });
     });
+    s.on('disconnect', () => setConnected(false));
     s.on('connect_error', err => {
+      setConnected(false);
       if (err.message === 'unauthorized') onLogout();
     });
+
+    // When the phone wakes the page up again, reconnect right away and refresh everything.
+    const wake = () => {
+      if (document.visibilityState === 'hidden') return;
+      if (!s.connected) s.connect();
+      else void loadData();
+    };
+    document.addEventListener('visibilitychange', wake);
+    window.addEventListener('online', wake);
+    window.addEventListener('focus', wake);
 
     s.on('presence-update', ({ userId, isOnline }: { userId: string; isOnline: boolean }) =>
       setFriends(prev => prev.map(f => (f.userId === userId ? { ...f, isOnline } : f)))
@@ -116,6 +195,9 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
     });
 
     return () => {
+      document.removeEventListener('visibilitychange', wake);
+      window.removeEventListener('online', wake);
+      window.removeEventListener('focus', wake);
       s.disconnect();
       setSocket(null);
     };
@@ -155,6 +237,12 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
 
   return (
     <div className="h-full bg-slate-950 text-slate-100 flex flex-col font-sans">
+      {!connected && (
+        <div role="status" className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] bg-amber-500/90 text-slate-950 text-xs font-semibold px-4 py-2 rounded-full shadow-xl">
+          Reconnecting…
+        </div>
+      )}
+
       {calls.notice && (
         <div role="status" className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] bg-slate-800 border border-slate-700 text-slate-100 text-xs px-4 py-2 rounded-full shadow-xl max-w-[90vw] text-center">
           {calls.notice}
@@ -191,12 +279,14 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
         />
       )}
 
-      <header className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-slate-800 bg-slate-900/60 shrink-0">
+      <header
+        className={`${selected && tab === 'chats' ? 'hidden md:flex' : 'flex'} items-center justify-between gap-2 px-4 sm:px-6 py-3 border-b border-slate-800 bg-slate-900/60 shrink-0`}
+      >
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-cyan-500 to-indigo-600 flex items-center justify-center">
             <Radio className="w-5 h-5 text-white" />
           </div>
-          <span className="text-lg font-bold tracking-tight text-white">KiteChat</span>
+          <span className="hidden sm:inline text-lg font-bold tracking-tight text-white">KiteChat</span>
         </div>
         {filesEnabled && (
           <nav className="flex bg-slate-950 p-1 rounded-xl border border-slate-800" aria-label="Sections">
@@ -204,7 +294,7 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
               <button
                 key={t}
                 onClick={() => setTab(t)}
-                className={`px-3 py-1 text-xs font-semibold rounded-lg transition-colors ${tab === t ? 'bg-cyan-500 text-slate-950' : 'text-slate-400 hover:text-white'}`}
+                className={`whitespace-nowrap px-3 py-1 text-xs font-semibold rounded-lg transition-colors ${tab === t ? 'bg-cyan-500 text-slate-950' : 'text-slate-400 hover:text-white'}`}
               >
                 {t === 'chats' ? 'Chats' : 'Stories & Reels'}
               </button>
@@ -341,27 +431,4 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
           <p className="text-xs text-slate-400 mb-5">Share this so friends can add you.</p>
           <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 mb-5 text-center">
             <span className="text-2xl font-mono font-bold text-cyan-400 tracking-widest block break-all">{user.userId}</span>
-            <span className="text-[11px] text-slate-400 mt-1 block">{user.name}</span>
-          </div>
-          <button onClick={copyId} className="w-full py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-medium text-sm flex items-center justify-center gap-2 border border-slate-700">
-            {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4 text-cyan-400" />}
-            <span>{copied ? 'Copied' : 'Copy User ID'}</span>
-          </button>
-        </Modal>
-      )}
-    </div>
-  );
-}
-
-function Modal({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
-  return (
-    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
-      <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative" onClick={e => e.stopPropagation()}>
-        <button onClick={onClose} className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 flex items-center justify-center text-slate-400 hover:text-white" aria-label="Close">
-          <X className="w-4 h-4" />
-        </button>
-        {children}
-      </div>
-    </div>
-  );
-}
+            <span className="text-[11px] text-slate-400 mt-1 block">{user.nam
