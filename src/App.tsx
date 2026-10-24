@@ -1,0 +1,487 @@
+import { Component, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { io, type Socket } from 'socket.io-client';
+import { Bell, Check, ChevronRight, Copy, LogOut, Phone, Radio, Sparkles, UserPlus, Users, Video, X } from 'lucide-react';
+import { api, ApiError, getToken, loadToken, setToken } from './api.ts';
+import Auth from './Auth.tsx';
+import Chat from './Chat.tsx';
+import CallScreen from './CallScreen.tsx';
+import Feed from './Feed.tsx';
+import { downloadSharedFile, sendFileToFriend, type MediaConfig } from './media.ts';
+import { enableNotifications, notificationState, notify, playMessageSound, registerSW, startRinging, stopRinging, unlockAudioOnFirstTap } from './notify.ts';
+import { useCall } from './useCall.ts';
+import type { ChatMessage, Friend, User } from './types.ts';
+
+/** Shows a friendly screen instead of a blank page if something crashes, and recovers by itself. */
+class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  private retry = () => this.setState({ failed: false });
+  componentDidMount() {
+    document.addEventListener('visibilitychange', this.onVisible);
+  }
+  componentWillUnmount() {
+    document.removeEventListener('visibilitychange', this.onVisible);
+  }
+  private onVisible = () => {
+    if (document.visibilityState === 'visible' && this.state.failed) this.retry();
+  };
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <div className="min-h-full bg-slate-950 text-slate-100 flex flex-col items-center justify-center text-center p-8 gap-4">
+        <p className="text-sm text-slate-300">Something went wrong. Tap the button to continue.</p>
+        <button onClick={() => window.location.reload()} className="px-5 py-2.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded-xl text-sm font-semibold">
+          Reload
+        </button>
+      </div>
+    );
+  }
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <Root />
+    </ErrorBoundary>
+  );
+}
+
+function Root() {
+  const [user, setUser] = useState<User | null>(null);
+  const [booting, setBooting] = useState(true);
+
+  // Restore a saved session. If the free server is still waking up, keep trying instead of failing.
+  useEffect(() => {
+    if (!loadToken()) {
+      setBooting(false);
+      return;
+    }
+    let cancelled = false;
+    let tries = 0;
+    const attempt = () => {
+      api<{ user: User }>('/api/me')
+        .then(r => {
+          if (cancelled) return;
+          setUser(r.user);
+          setBooting(false);
+        })
+        .catch(e => {
+          if (cancelled) return;
+          if (e instanceof ApiError && e.status === 401) {
+            setToken(null);
+            setBooting(false);
+          } else if (++tries < 30) {
+            setTimeout(attempt, 3000);
+          } else {
+            setBooting(false);
+          }
+        });
+    };
+    attempt();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const logout = useCallback(() => {
+    setToken(null);
+    setUser(null);
+  }, []);
+
+  if (booting) {
+    return (
+      <div className="min-h-full bg-slate-950 text-slate-400 flex items-center justify-center text-sm">
+        Waking up KiteChat… this can take a minute.
+      </div>
+    );
+  }
+  if (!user) return <Auth onAuthed={setUser} />;
+  return <Messenger key={user.userId} user={user} onLogout={logout} />;
+}
+
+function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
+  const [socket, setSocket] = useState<Socket | null>(null);
+  const [friends, setFriends] = useState<Friend[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [typing, setTyping] = useState<Record<string, boolean>>({});
+  const [addOpen, setAddOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [newFriendId, setNewFriendId] = useState('');
+  const [addError, setAddError] = useState('');
+  const [copied, setCopied] = useState(false);
+  const [tab, setTab] = useState<'chats' | 'feed'>('chats');
+  const [mediaCfg, setMediaCfg] = useState<MediaConfig | null>(null);
+  const [connected, setConnected] = useState(true);
+  const [notifState, setNotifState] = useState(notificationState());
+  const filesEnabled = !!mediaCfg?.enabled;
+
+  const selectedRef = useRef<string | null>(null);
+  selectedRef.current = selectedId;
+  const friendsRef = useRef<Friend[]>([]);
+  friendsRef.current = friends;
+  const typingTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  const calls = useCall(socket);
+  const selected = friends.find(f => f.userId === selectedId) ?? null;
+
+  const loadData = useCallback(async () => {
+    try {
+      const [f, m] = await Promise.all([
+        api<{ friends: Friend[] }>('/api/friends'),
+        api<{ messages: ChatMessage[] }>('/api/messages')
+      ]);
+      setFriends(f.friends);
+      setMessages(m.messages);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) onLogout();
+    }
+  }, [onLogout]);
+
+  useEffect(() => {
+    unlockAudioOnFirstTap();
+    if (notificationState() === 'granted') void registerSW();
+  }, []);
+
+  useEffect(() => {
+    api<MediaConfig>('/api/media/config')
+      .then(setMediaCfg)
+      .catch(() => setMediaCfg(null));
+  }, []);
+
+  // One socket per session; handlers read mutable state through refs.
+  useEffect(() => {
+    const s = io({ auth: { token: getToken() }, transports: ['websocket', 'polling'] });
+    setSocket(s);
+
+    s.on('connect', () => {
+      setConnected(true);
+      loadData(); // also resyncs after a reconnect
+      if (selectedRef.current) s.emit('mark-messages-read', { friendId: selectedRef.current });
+    });
+    s.on('disconnect', () => setConnected(false));
+    s.on('connect_error', err => {
+      setConnected(false);
+      if (err.message === 'unauthorized') onLogout();
+    });
+
+    // When the phone wakes the page up again, reconnect right away and refresh everything.
+    const wake = () => {
+      if (document.visibilityState === 'hidden') return;
+      if (!s.connected) s.connect();
+      else void loadData();
+    };
+    document.addEventListener('visibilitychange', wake);
+    window.addEventListener('online', wake);
+    window.addEventListener('focus', wake);
+
+    s.on('presence-update', ({ userId, isOnline }: { userId: string; isOnline: boolean }) =>
+      setFriends(prev => prev.map(f => (f.userId === userId ? { ...f, isOnline } : f)))
+    );
+    s.on('friend-added', (f: Friend) => setFriends(prev => [...prev.filter(x => x.userId !== f.userId), f]));
+    s.on('chat-message', (msg: ChatMessage) => {
+      setMessages(prev => (prev.some(m => m.id === msg.id) ? prev : [...prev, msg]));
+      if (msg.senderId !== user.userId) {
+        const watching = !document.hidden && selectedRef.current === msg.senderId;
+        if (watching) s.emit('mark-messages-read', { friendId: msg.senderId });
+        else if (document.hidden) {
+          const name = friendsRef.current.find(f => f.userId === msg.senderId)?.name ?? msg.senderId;
+          void notify(name, msg.file ? 'Sent you a file' : msg.message, `msg-${msg.senderId}`);
+        } else playMessageSound();
+      }
+    });
+    s.on('message-updated', (msg: ChatMessage) => setMessages(prev => prev.map(m => (m.id === msg.id ? msg : m))));
+    s.on('message-status-update', ({ messageIds, status }: { messageIds: string[]; status: ChatMessage['status'] }) => {
+      const ids = new Set(messageIds);
+      setMessages(prev => prev.map(m => (ids.has(m.id) ? { ...m, status } : m)));
+    });
+    s.on('message-reaction-update', ({ messageId, reactions }: { messageId: string; reactions: Record<string, string> }) =>
+      setMessages(prev => prev.map(m => (m.id === messageId ? { ...m, reactions } : m)))
+    );
+    s.on('typing', ({ senderId, isTyping }: { senderId: string; isTyping: boolean }) => {
+      setTyping(prev => ({ ...prev, [senderId]: isTyping }));
+      clearTimeout(typingTimers.current[senderId]);
+      if (isTyping) {
+        typingTimers.current[senderId] = setTimeout(() => setTyping(prev => ({ ...prev, [senderId]: false })), 4000);
+      }
+    });
+
+    return () => {
+      document.removeEventListener('visibilitychange', wake);
+      window.removeEventListener('online', wake);
+      window.removeEventListener('focus', wake);
+      s.disconnect();
+      setSocket(null);
+    };
+  }, [user.userId, loadData, onLogout]);
+
+  const selectFriend = (f: Friend) => {
+    setSelectedId(f.userId);
+    socket?.emit('mark-messages-read', { friendId: f.userId });
+  };
+
+  const unread = (id: string) => messages.filter(m => m.senderId === id && m.status !== 'read').length;
+
+  const addFriend = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAddError('');
+    try {
+      const { friend } = await api<{ friend: Friend }>('/api/friends', { friendId: newFriendId });
+      setFriends(prev => [...prev.filter(f => f.userId !== friend.userId), friend]);
+      setNewFriendId('');
+      setAddOpen(false);
+    } catch (err) {
+      setAddError(err instanceof ApiError ? err.message : 'Could not add friend');
+    }
+  };
+
+  const copyId = async () => {
+    try {
+      await navigator.clipboard.writeText(user.userId);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* clipboard unavailable */
+    }
+  };
+
+  const inCall = !!calls.call;
+
+  // Ring (and show a system notification) for an incoming call.
+  const incomingId = calls.incoming && !inCall ? calls.incoming.callerName : null;
+  useEffect(() => {
+    if (!incomingId) return;
+    startRinging();
+    void notify('Incoming call', `${incomingId} is calling you`, 'incoming-call', true);
+    return stopRinging;
+  }, [incomingId]);
+
+  const turnOnNotifications = async () => setNotifState(await enableNotifications());
+
+  return (
+    <div className="h-full bg-slate-950 text-slate-100 flex flex-col font-sans">
+      {!connected && (
+        <div role="status" className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] bg-amber-500/90 text-slate-950 text-xs font-semibold px-4 py-2 rounded-full shadow-xl">
+          Reconnecting…
+        </div>
+      )}
+
+      {calls.notice && (
+        <div role="status" className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] bg-slate-800 border border-slate-700 text-slate-100 text-xs px-4 py-2 rounded-full shadow-xl max-w-[90vw] text-center">
+          {calls.notice}
+        </div>
+      )}
+
+      {calls.incoming && !inCall && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-sm w-full text-center shadow-2xl">
+            <div className="w-16 h-16 rounded-full bg-cyan-500/20 text-cyan-400 flex items-center justify-center mx-auto mb-4 animate-bounce">
+              {calls.incoming.type === 'audio' ? <Phone className="w-8 h-8" /> : <Video className="w-8 h-8" />}
+            </div>
+            <h3 className="text-lg font-bold text-white mb-1">Incoming {calls.incoming.type === 'audio' ? 'audio' : 'video'} call</h3>
+            <p className="text-sm text-slate-400 mb-6"><strong className="text-white">{calls.incoming.callerName}</strong> is calling you.</p>
+            <div className="flex gap-3">
+              <button onClick={calls.declineCall} className="flex-1 py-3 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 text-rose-400 font-semibold text-sm border border-rose-500/30">Decline</button>
+              <button onClick={calls.acceptCall} className="flex-1 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-sm">Accept</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {calls.call && (
+        <CallScreen
+          call={calls.call}
+          localStream={calls.localStream}
+          remoteStream={calls.remoteStream}
+          micOn={calls.micOn}
+          camOn={calls.camOn}
+          seconds={calls.seconds}
+          onToggleMic={calls.toggleMic}
+          onToggleCam={calls.toggleCam}
+          onEnd={calls.endCall}
+        />
+      )}
+
+      <header
+        className={`${selected && tab === 'chats' ? 'hidden md:flex' : 'flex'} items-center justify-between gap-2 px-4 sm:px-6 py-3 border-b border-slate-800 bg-slate-900/60 shrink-0`}
+      >
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-cyan-500 to-indigo-600 flex items-center justify-center">
+            <Radio className="w-5 h-5 text-white" />
+          </div>
+          <span className="hidden sm:inline text-lg font-bold tracking-tight text-white">KiteChat</span>
+        </div>
+        {filesEnabled && (
+          <nav className="flex bg-slate-950 p-1 rounded-xl border border-slate-800" aria-label="Sections">
+            {(['chats', 'feed'] as const).map(t => (
+              <button
+                key={t}
+                onClick={() => setTab(t)}
+                className={`whitespace-nowrap px-3 py-1 text-xs font-semibold rounded-lg transition-colors ${tab === t ? 'bg-cyan-500 text-slate-950' : 'text-slate-400 hover:text-white'}`}
+              >
+                {t === 'chats' ? 'Chats' : 'Stories & Reels'}
+              </button>
+            ))}
+          </nav>
+        )}
+        <div className="flex items-center gap-2 sm:gap-3">
+          {notifState === 'default' && (
+            <button onClick={turnOnNotifications} className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center" title="Turn on notifications" aria-label="Turn on notifications">
+              <Bell className="w-4 h-4" />
+            </button>
+          )}
+          <button onClick={() => setShareOpen(true)} className="px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700">
+            <span className="font-mono text-cyan-400">{user.userId}</span>
+          </button>
+          <div className="hidden sm:flex items-center gap-2 bg-slate-800/80 px-3 py-1.5 rounded-full border border-slate-700/60 text-xs text-slate-300">
+            <div className="w-6 h-6 rounded-full bg-cyan-500/20 text-cyan-400 flex items-center justify-center font-bold">{user.avatar}</div>
+            <span>{user.name}</span>
+          </div>
+          <button onClick={onLogout} className="w-8 h-8 rounded-lg hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 flex items-center justify-center" title="Sign out">
+            <LogOut className="w-4 h-4" />
+          </button>
+        </div>
+      </header>
+
+      <main className="flex-1 flex min-h-0">
+        {tab === 'feed' ? (
+          <Feed me={user.userId} />
+        ) : (
+        <>
+        <aside className={`${selected ? 'hidden md:flex' : 'flex'} w-full md:w-80 shrink-0 bg-slate-900 border-r border-slate-800 flex-col`}>
+          <div className="p-4 border-b border-slate-800 flex items-center justify-between">
+            <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Friends ({friends.length})</span>
+            <button onClick={() => { setAddOpen(true); setAddError(''); }} className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium bg-cyan-500 hover:bg-cyan-400 text-slate-950 rounded-lg">
+              <UserPlus className="w-3.5 h-3.5" />
+              <span>Add</span>
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-2 space-y-1">
+            {friends.length === 0 ? (
+              <div className="text-center py-12 px-4 text-slate-500">
+                <Users className="w-10 h-10 mx-auto mb-2 opacity-30" />
+                <p className="text-xs">No friends yet. Tap Add and enter their User ID.</p>
+              </div>
+            ) : (
+              friends.map(f => {
+                const n = unread(f.userId);
+                return (
+                  <button
+                    key={f.userId}
+                    onClick={() => selectFriend(f)}
+                    className={`w-full text-left flex items-center justify-between p-3 rounded-2xl transition-colors ${
+                      selectedId === f.userId ? 'bg-slate-800 border border-slate-700' : 'hover:bg-slate-800/50 border border-transparent'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="relative shrink-0">
+                        <div className="w-10 h-10 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold text-sm">{f.avatar}</div>
+                        <span className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-slate-900 ${f.isOnline ? 'bg-emerald-500' : 'bg-slate-600'}`} />
+                      </div>
+                      <div className="min-w-0">
+                        <h4 className="text-sm font-semibold text-white truncate">{f.name}</h4>
+                        <span className="text-[10px] font-mono text-cyan-400">{f.userId}</span>
+                      </div>
+                    </div>
+                    {n > 0 ? (
+                      <span className="min-w-5 h-5 px-1.5 rounded-full bg-emerald-500 text-slate-950 text-[11px] font-bold flex items-center justify-center">{n}</span>
+                    ) : (
+                      <ChevronRight className="w-4 h-4 text-slate-500" />
+                    )}
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </aside>
+
+        <section className={`${selected ? 'flex' : 'hidden md:flex'} flex-1 min-w-0 flex-col bg-slate-950`}>
+          {selected ? (
+            <Chat
+              key={selected.userId}
+              me={user.userId}
+              friend={selected}
+              messages={messages}
+              friendTyping={!!typing[selected.userId]}
+              callDisabled={inCall || !!calls.incoming || !selected.isOnline}
+              filesEnabled={filesEnabled}
+              onSendFile={(file, onProgress) => {
+                if (!mediaCfg) return Promise.reject(new Error('File sharing is not available'));
+                return sendFileToFriend(file, selected.userId, mediaCfg, onProgress);
+              }}
+              onDownload={downloadSharedFile}
+              callHint={inCall ? 'You are already in a call' : !selected.isOnline ? `${selected.name} is offline` : ''}
+              onSend={text => socket?.emit('chat-message', { recipientId: selected.userId, message: text })}
+              onTyping={isTyping => socket?.emit('typing', { recipientId: selected.userId, isTyping })}
+              onReact={(messageId, reaction) => socket?.emit('message-reaction', { messageId, reaction })}
+              onCall={type => calls.startCall(selected, type)}
+              onBack={() => setSelectedId(null)}
+            />
+          ) : (
+            <div className="flex-1 flex flex-col items-center justify-center text-center p-8">
+              <div className="w-16 h-16 rounded-2xl bg-cyan-500/10 text-cyan-400 flex items-center justify-center mb-4">
+                <Sparkles className="w-8 h-8" />
+              </div>
+              <h2 className="text-xl font-bold text-white mb-2">Welcome, {user.name.split(' ')[0]}</h2>
+              <p className="text-sm text-slate-400 max-w-sm mb-6">Pick a friend to chat or call. Share your User ID so friends can add you.</p>
+              <button onClick={() => setShareOpen(true)} className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 rounded-xl text-xs font-semibold border border-slate-700">
+                My User ID: <code className="text-cyan-400 font-mono ml-1">{user.userId}</code>
+              </button>
+            </div>
+          )}
+        </section>
+        </>
+        )}
+      </main>
+
+      {addOpen && (
+        <Modal onClose={() => setAddOpen(false)}>
+          <h3 className="text-lg font-bold text-white mb-1">Add friend</h3>
+          <p className="text-xs text-slate-400 mb-5">Enter your friend's User ID. You'll both see each other in your lists.</p>
+          {addError && <div role="alert" className="mb-3 p-2.5 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-400 text-xs">{addError}</div>}
+          <form onSubmit={addFriend} className="space-y-4">
+            <input
+              required
+              autoFocus
+              value={newFriendId}
+              onChange={e => setNewFriendId(e.target.value.toUpperCase())}
+              placeholder="e.g. SAM456"
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm font-mono tracking-wider text-white focus:outline-none focus:border-cyan-500"
+            />
+            <button type="submit" className="w-full h-11 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold rounded-xl text-sm">Add to friends</button>
+          </form>
+        </Modal>
+      )}
+
+      {shareOpen && (
+        <Modal onClose={() => setShareOpen(false)}>
+          <h3 className="text-lg font-bold text-white mb-1">Your User ID</h3>
+          <p className="text-xs text-slate-400 mb-5">Share this so friends can add you.</p>
+          <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 mb-5 text-center">
+            <span className="text-2xl font-mono font-bold text-cyan-400 tracking-widest block break-all">{user.userId}</span>
+            <span className="text-[11px] text-slate-400 mt-1 block">{user.name}</span>
+          </div>
+          <button onClick={copyId} className="w-full py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-medium text-sm flex items-center justify-center gap-2 border border-slate-700">
+            {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4 text-cyan-400" />}
+            <span>{copied ? 'Copied' : 'Copy User ID'}</span>
+          </button>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function Modal({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative" onClick={e => e.stopPropagation()}>
+        <button onClick={onClose} className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 flex items-center justify-center text-slate-400 hover:text-white" aria-label="Close">
+          <X className="w-4 h-4" />
+        </button>
+        {children}
+      </div>
+    </div>
+  );
+}
