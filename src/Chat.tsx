@@ -275,4 +275,4 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
       </form>
     </div>
   );
-      }
+}
