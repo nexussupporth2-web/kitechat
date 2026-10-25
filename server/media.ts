@@ -36,6 +36,9 @@ interface Deps {
   isOnline: (id: string) => boolean;
 }
 
+/** Short reason shown on screen so a problem can be reported without digging through logs. */
+const reason = (e: unknown) => String((e as any)?.name ?? 'Error') + ': ' + String((e as any)?.message ?? e).slice(0, 140);
+
 const cleanName = (n: unknown) =>
   (typeof n === 'string' ? n : 'file').replace(/[\\/\0\r\n"]/g, '_').trim().slice(0, 120) || 'file';
 
@@ -222,7 +225,7 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline }: Deps) {
       res.json({ posts: items, usedBytes: usedBytes(me.userId), quotaBytes: LIMITS.quotaBytes });
     } catch (e) {
       console.error('feed failed', e);
-      res.status(500).json({ error: 'Could not load the feed' });
+      res.status(500).json({ error: `Could not load the feed (${reason(e)})` });
     }
   });
 
@@ -249,7 +252,7 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline }: Deps) {
       res.json({ ...base, items });
     } catch (e) {
       console.error('profile failed', e);
-      res.status(500).json({ error: 'Could not load the profile' });
+      res.status(500).json({ error: `Could not load the profile (${reason(e)})` });
     }
   });
 
