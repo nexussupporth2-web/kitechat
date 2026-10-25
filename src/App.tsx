@@ -6,6 +6,7 @@ import Auth from './Auth.tsx';
 import Chat from './Chat.tsx';
 import CallScreen from './CallScreen.tsx';
 import Feed from './Feed.tsx';
+import Profile from './Profile.tsx';
 import { downloadSharedFile, sendFileToFriend, type MediaConfig } from './media.ts';
 import { enableNotifications, notificationState, notify, playMessageSound, registerSW, startRinging, stopRinging, unlockAudioOnFirstTap } from './notify.ts';
 import { useCall } from './useCall.ts';
@@ -113,7 +114,8 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [newFriendId, setNewFriendId] = useState('');
   const [addError, setAddError] = useState('');
   const [copied, setCopied] = useState(false);
-  const [tab, setTab] = useState<'chats' | 'feed'>('chats');
+  const [tab, setTab] = useState<'chats' | 'feed' | 'profile'>('chats');
+  const [profileFor, setProfileFor] = useState<string | null>(null);
   const [mediaCfg, setMediaCfg] = useState<MediaConfig | null>(null);
   const [connected, setConnected] = useState(true);
   const [wallpaperUrl, setWallpaperUrl] = useState(DEFAULT_WALLPAPER);
@@ -327,13 +329,13 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
         </div>
         {filesEnabled && (
           <nav className="flex bg-slate-950 p-1 rounded-xl border border-slate-800" aria-label="Sections">
-            {(['chats', 'feed'] as const).map(t => (
+            {(['chats', 'feed', 'profile'] as const).map(t => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
                 className={`whitespace-nowrap px-3 py-1 text-xs font-semibold rounded-lg transition-colors ${tab === t ? 'bg-cyan-500 text-accent-ink' : 'text-slate-400 hover:text-white'}`}
               >
-                {t === 'chats' ? 'Chats' : 'Stories & Reels'}
+                {t === 'chats' ? 'Chats' : t === 'feed' ? 'Stories' : 'Profile'}
               </button>
             ))}
           </nav>
@@ -360,6 +362,8 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
       <main className="flex-1 flex min-h-0">
         {tab === 'feed' ? (
           <Feed me={user.userId} />
+        ) : tab === 'profile' ? (
+          <Profile key={user.userId} userId={user.userId} isMe />
         ) : (
         <>
         <aside className={`${selected ? 'hidden md:flex' : 'flex'} w-full md:w-80 shrink-0 bg-slate-900 border-r border-slate-800 flex-col`}>
@@ -430,6 +434,7 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
               onReact={(messageId, reaction) => socket?.emit('message-reaction', { messageId, reaction })}
               onCall={type => calls.startCall(selected, type)}
               onBack={() => setSelectedId(null)}
+              onOpenProfile={() => setProfileFor(selected.userId)}
               wallpaperUrl={wallpaperUrl}
               onSetWallpaper={async file => {
                 if (!filesEnabled) throw new Error('Wallpapers need file storage, which is not set up yet');
@@ -457,6 +462,22 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
         </>
         )}
       </main>
+
+      {profileFor && (
+        <div className="fixed inset-0 z-40 bg-slate-950 flex flex-col">
+          <Profile
+            key={profileFor}
+            userId={profileFor}
+            isMe={profileFor === user.userId}
+            onBack={() => setProfileFor(null)}
+            onMessage={() => {
+              setSelectedId(profileFor);
+              setTab('chats');
+              setProfileFor(null);
+            }}
+          />
+        </div>
+      )}
 
       {addOpen && (
         <Modal onClose={() => setAddOpen(false)}>

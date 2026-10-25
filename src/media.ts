@@ -90,18 +90,19 @@ export async function downloadSharedFile(id: string) {
 }
 
 /** Validate, compress, upload and publish a story/status or reel. */
-export async function publishPost(kind: 'story' | 'reel', file: File, caption: string, cfg: MediaConfig, onProgress: ProgressFn) {
+export async function publishPost(kind: 'story' | 'reel' | 'album', file: File, caption: string, cfg: MediaConfig, onProgress: ProgressFn) {
   const isImage = file.type.startsWith('image/');
   const isAudio = file.type.startsWith('audio/');
   const isVideo = file.type.startsWith('video/');
   if (!isImage && !isAudio && !isVideo) throw new Error('Choose a photo, video or audio file');
   if (kind === 'reel' && !isVideo) throw new Error('Reels must be a video');
+  if (kind === 'album' && isAudio) throw new Error('Album items can be a photo or a video');
   if (file.size > cfg.limits.share.mediaOriginalBytes) throw new Error(`This file is too large. The limit is ${mb(cfg.limits.share.mediaOriginalBytes)}.`);
 
   if (isVideo || isAudio) {
     const maxSec = kind === 'story' ? cfg.limits.story.maxMediaSec : cfg.limits.reel.maxVideoSec;
     const dur = await mediaDuration(file);
-    if (dur > maxSec + 0.5) throw new Error(`Too long. ${kind === 'story' ? 'Statuses' : 'Reels'} can be up to ${maxSec} seconds.`);
+    if (dur > maxSec + 0.5) throw new Error(`Too long. ${kind === 'story' ? 'Statuses' : kind === 'album' ? 'Album videos' : 'Reels'} can be up to ${maxSec} seconds.`);
   }
 
   const { blob, mime } = await prepare(file, onProgress);

@@ -22,12 +22,13 @@ interface Props {
   onReact: (messageId: string, emoji: string) => void;
   onCall: (type: 'audio' | 'video') => void;
   onBack: () => void;
+  onOpenProfile: () => void;
   wallpaperUrl: string;
   onSetWallpaper: (file: File) => Promise<void>;
   onResetWallpaper: () => Promise<void>;
 }
 
-export default function Chat({ me, friend, messages, friendTyping, callDisabled, callHint, filesEnabled, onSendFile, onDownload, onSend, onTyping, onReact, onCall, onBack, wallpaperUrl, onSetWallpaper, onResetWallpaper }: Props) {
+export default function Chat({ me, friend, messages, friendTyping, callDisabled, callHint, filesEnabled, onSendFile, onDownload, onSend, onTyping, onReact, onCall, onBack, onOpenProfile, wallpaperUrl, onSetWallpaper, onResetWallpaper }: Props) {
   const [input, setInput] = useState('');
   const [progress, setProgress] = useState<{ phase: Phase; p: number } | null>(null);
   const [fileError, setFileError] = useState('');
@@ -140,6 +141,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
           <button onClick={onBack} className="md:hidden w-9 h-9 rounded-full hover:bg-slate-800 flex items-center justify-center text-slate-300" aria-label="Back">
             <ArrowLeft className="w-5 h-5" />
           </button>
+          <button onClick={onOpenProfile} className="flex items-center gap-3 min-w-0 text-left" aria-label={`Open ${friend.name}'s profile`}>
           <div className="w-10 h-10 shrink-0 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold text-sm">{friend.avatar}</div>
           <div className="min-w-0">
             <h3 className="text-sm font-bold text-white truncate">{friend.name}</h3>
@@ -156,6 +158,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
               )}
             </div>
           </div>
+          </button>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={() => { setWallError(''); setWallOpen(true); }} className="w-10 h-10 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center border border-slate-700" title="Chat wallpaper" aria-label="Chat wallpaper">
