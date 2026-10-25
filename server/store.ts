@@ -38,7 +38,7 @@ export interface Message {
 export interface Post {
   id: string;
   ownerId: string;
-  kind: 'story' | 'reel';
+  kind: 'story' | 'reel' | 'album';
   key: string;
   mime: string;
   size: number;

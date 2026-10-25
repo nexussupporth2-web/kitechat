@@ -17,6 +17,8 @@ export const LIMITS = {
   reel: { videoBytes: 15 * MB, maxVideoSec: 30 },
   share: { bytes: 50 * MB, mediaOriginalBytes: 300 * MB, pendingPerSender: 5, ttlMs: 24 * HOUR },
   wallpaperBytes: 1 * MB,
+  /** How many of each a user can keep. Adding one more removes the oldest. */
+  caps: { story: 2, reel: 10, albumImage: 10, albumVideo: 10 },
   quotaBytes: 200 * MB
 };
 
@@ -100,6 +102,12 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline }: Deps) {
       if (!(mime in VIDEO_TYPES)) return res.status(400).json({ error: 'Reels must be an MP4, WebM or MOV video' });
       if (size > LIMITS.reel.videoBytes) return res.status(400).json({ error: `Too large even after compression (limit ${LIMITS.reel.videoBytes / MB} MB)` });
       key = `reels/${me.userId}/${crypto.randomUUID()}.${VIDEO_TYPES[mime]}`;
+    } else if (kind === 'album') {
+      const ext = IMAGE_TYPES[mime] ?? VIDEO_TYPES[mime];
+      if (!ext) return res.status(400).json({ error: 'Album items can be a photo or a video' });
+      const max = mime in IMAGE_TYPES ? LIMITS.story.imageBytes : LIMITS.reel.videoBytes;
+      if (size > max) return res.status(400).json({ error: `Too large even after compression (limit ${max / MB} MB)` });
+      key = `album/${me.userId}/${crypto.randomUUID()}.${ext}`;
     } else if (kind === 'wallpaper') {
       const ext = IMAGE_TYPES[mime];
       if (!ext) return res.status(400).json({ error: 'Wallpaper must be a JPG, PNG or WebP photo' });
@@ -118,7 +126,7 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline }: Deps) {
       return res.status(400).json({ error: 'Invalid upload type' });
     }
 
-    if ((kind === 'story' || kind === 'reel') && usedBytes(me.userId) + size > LIMITS.quotaBytes) {
+    if ((kind === 'story' || kind === 'reel' || kind === 'album') && usedBytes(me.userId) + size > LIMITS.quotaBytes) {
       return res.status(413).json({ error: `Storage full. You can keep up to ${LIMITS.quotaBytes / MB} MB. Delete something first.` });
     }
 
@@ -137,7 +145,13 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline }: Deps) {
     const me = res.locals.user as User;
     const { key, caption } = req.body ?? {};
     if (typeof key !== 'string') return res.status(400).json({ error: 'Invalid request' });
-    const kind = key.startsWith(`stories/${me.userId}/`) ? 'story' : key.startsWith(`reels/${me.userId}/`) ? 'reel' : null;
+    const kind: Post['kind'] | null = key.startsWith(`stories/${me.userId}/`)
+      ? 'story'
+      : key.startsWith(`reels/${me.userId}/`)
+        ? 'reel'
+        : key.startsWith(`album/${me.userId}/`)
+          ? 'album'
+          : null;
     if (!kind) return res.status(400).json({ error: 'Invalid file' });
     if (data.posts.some(p => p.key === key)) return res.status(409).json({ error: 'Already published' });
 
@@ -145,9 +159,20 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline }: Deps) {
       const info = await head(key);
       if (!info) return res.status(400).json({ error: 'Upload not found. Please try again.' });
       const max = kind === 'reel' ? LIMITS.reel.videoBytes : storyMax(info.type);
-      if (info.size > max || usedBytes(me.userId) + info.size > LIMITS.quotaBytes) {
+      if (info.size > max) {
         await remove(key).catch(() => {});
         return res.status(413).json({ error: 'File is over your limit' });
+      }
+      // Keep only the newest few: when the limit is reached, the oldest one goes.
+      const isImg = info.type in IMAGE_TYPES;
+      const cap = kind === 'story' ? LIMITS.caps.story : kind === 'reel' ? LIMITS.caps.reel : isImg ? LIMITS.caps.albumImage : LIMITS.caps.albumVideo;
+      const same = data.posts
+        .filter(p => p.ownerId === me.userId && p.kind === kind && (kind !== 'album' || p.mime in IMAGE_TYPES === isImg))
+        .sort((a, b) => a.createdAt - b.createdAt);
+      while (same.length >= cap) await deletePost(same.shift()!);
+      if (usedBytes(me.userId) + info.size > LIMITS.quotaBytes) {
+        await remove(key).catch(() => {});
+        return res.status(413).json({ error: `Storage full. You can keep up to ${LIMITS.quotaBytes / MB} MB. Delete something first.` });
       }
       const now = Date.now();
       const post: Post = {
@@ -175,7 +200,7 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline }: Deps) {
     const visible = new Set([me.userId, ...me.friends]);
     const now = Date.now();
     const posts = data.posts
-      .filter(p => visible.has(p.ownerId) && (p.expiresAt === null || p.expiresAt > now))
+      .filter(p => p.kind !== 'album' && visible.has(p.ownerId) && (p.expiresAt === null || p.expiresAt > now))
       .sort((a, b) => b.createdAt - a.createdAt)
       .slice(0, 100);
     try {
@@ -198,6 +223,33 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline }: Deps) {
     } catch (e) {
       console.error('feed failed', e);
       res.status(500).json({ error: 'Could not load the feed' });
+    }
+  });
+
+  // ---------- profile + album (owner and friends can see it) ----------
+
+  router.get('/profile/:userId', requireAuth, async (req, res) => {
+    const me = res.locals.user as User;
+    const owner = data.users[String(req.params.userId)];
+    if (!owner || (owner.userId !== me.userId && !areFriends(me.userId, owner.userId))) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+    const mine = data.posts.filter(p => p.ownerId === owner.userId);
+    const album = mine.filter(p => p.kind === 'album').sort((a, b) => b.createdAt - a.createdAt);
+    const base = {
+      user: { userId: owner.userId, name: owner.name, avatar: owner.avatar, isOnline: isOnline(owner.userId) },
+      stats: { album: album.length, reels: mine.filter(p => p.kind === 'reel').length, friends: owner.friends.length },
+      caps: { image: LIMITS.caps.albumImage, video: LIMITS.caps.albumVideo }
+    };
+    if (!r2Enabled) return res.json({ ...base, items: [] });
+    try {
+      const items = await Promise.all(
+        album.map(async p => ({ id: p.id, mime: p.mime, size: p.size, caption: p.caption, createdAt: p.createdAt, url: await signGet(p.key, { expiresIn: HOUR }) }))
+      );
+      res.json({ ...base, items });
+    } catch (e) {
+      console.error('profile failed', e);
+      res.status(500).json({ error: 'Could not load the profile' });
     }
   });
 
