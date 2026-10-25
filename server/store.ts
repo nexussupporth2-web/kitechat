@@ -22,6 +22,8 @@ export interface User {
   birthday?: string;
   showGender?: boolean;
   showBirthday?: boolean;
+  /** Devices that allowed notifications (so a closed app can still be told about a message or call). */
+  pushSubs?: { endpoint: string; keys: { p256dh: string; auth: string } }[];
 }
 
 export type MsgStatus = 'sent' | 'received' | 'read';

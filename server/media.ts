@@ -37,6 +37,8 @@ interface Deps {
   requireAuth: RequestHandler;
   areFriends: (a: string, b: string) => boolean;
   isOnline: (id: string) => boolean;
+  /** Sends a closed-app notification for a new message/file to someone who is offline. */
+  notifyOffline: (recipientId: string, senderId: string) => void;
 }
 
 /** Short reason shown on screen so a problem can be reported without digging through logs. */
@@ -45,7 +47,7 @@ const reason = (e: unknown) => String((e as any)?.name ?? 'Error') + ': ' + Stri
 const cleanName = (n: unknown) =>
   (typeof n === 'string' ? n : 'file').replace(/[\\/\0\r\n"]/g, '_').trim().slice(0, 120) || 'file';
 
-export function mediaRouter({ io, requireAuth, areFriends, isOnline }: Deps) {
+export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffline }: Deps) {
   const router = Router();
 
   const needStorage = (_req: Request, res: Response, next: NextFunction) => {
@@ -495,6 +497,7 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline }: Deps) {
       });
       addMessage(msg);
       io.to(`user:${recipientId}`).to(`user:${me.userId}`).emit('chat-message', msg);
+      notifyOffline(recipientId, me.userId);
       res.json({ message: msg });
     } catch (e) {
       console.error('share failed', e);
