@@ -10,7 +10,7 @@ import Feed from './Feed.tsx';
 import Profile from './Profile.tsx';
 import ProfileSettings from './ProfileSettings.tsx';
 import { downloadSharedFile, sendFileToFriend, type MediaConfig } from './media.ts';
-import { enableNotifications, notificationState, notify, playMessageSound, registerSW, startRinging, stopRinging, unlockAudioOnFirstTap } from './notify.ts';
+import { enableNotifications, notificationState, notify, playMessageSound, registerSW, startRinging, stopRinging, subscribePush, unlockAudioOnFirstTap } from './notify.ts';
 import { useCall } from './useCall.ts';
 import { DEFAULT_WALLPAPER, loadChatWallpaper, resetMyWallpaper, setMyWallpaper } from './wallpaper.ts';
 import type { ChatMessage, Friend, User } from './types.ts';
@@ -158,7 +158,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
 
   useEffect(() => {
     unlockAudioOnFirstTap();
-    if (notificationState() === 'granted') void registerSW();
+    if (notificationState() === 'granted') void registerSW().then(subscribePush);
   }, []);
 
   useEffect(() => {
@@ -439,14 +439,14 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
               friend={selected}
               messages={messages}
               friendTyping={!!typing[selected.userId]}
-              callDisabled={inCall || !!calls.incoming || !selected.isOnline}
+              callDisabled={inCall || !!calls.incoming}
               filesEnabled={filesEnabled}
               onSendFile={(file, onProgress) => {
                 if (!mediaCfg) return Promise.reject(new Error('File sharing is not available'));
                 return sendFileToFriend(file, selected.userId, mediaCfg, onProgress);
               }}
               onDownload={downloadSharedFile}
-              callHint={inCall ? 'You are already in a call' : !selected.isOnline ? `${selected.name} is offline` : ''}
+              callHint={inCall ? 'You are already in a call' : !selected.isOnline ? `${selected.name} is offline. They will get a call notification.` : ''}
               onSend={text => socket?.emit('chat-message', { recipientId: selected.userId, message: text })}
               onTyping={isTyping => socket?.emit('typing', { recipientId: selected.userId, isTyping })}
               onReact={(messageId, reaction) => socket?.emit('message-reaction', { messageId, reaction })}

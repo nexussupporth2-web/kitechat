@@ -1,3 +1,5 @@
+import { api } from './api.ts';
+
 /** Notifications and sounds. System notifications use the phone's own default notification sound. */
 
 let reg: ServiceWorkerRegistration | null = null;
@@ -16,11 +18,40 @@ export async function registerSW(): Promise<void> {
   }
 }
 
+function keyToBytes(base64Url: string): Uint8Array<ArrayBuffer> {
+  const pad = '='.repeat((4 - (base64Url.length % 4)) % 4);
+  const raw = atob((base64Url + pad).replace(/-/g, '+').replace(/_/g, '/'));
+  const out = new Uint8Array(new ArrayBuffer(raw.length));
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+/**
+ * Registers this phone with the server so it can get notifications (messages, calls) even when the app is closed.
+ * Safe to call again and again.
+ */
+export async function subscribePush(): Promise<void> {
+  if (!notificationsSupported() || !('PushManager' in window) || Notification.permission !== 'granted') return;
+  try {
+    const { key } = await api<{ key: string | null }>('/api/push/key');
+    if (!key) return; // the server has no notification keys set up
+    await registerSW();
+    const r = reg ?? (await navigator.serviceWorker.ready);
+    const sub = (await r.pushManager.getSubscription()) ?? (await r.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyToBytes(key) }));
+    await api('/api/push/subscribe', { subscription: sub.toJSON() });
+  } catch {
+    /* notifications for a closed app just stay off */
+  }
+}
+
 /** Must be called from a tap. */
 export async function enableNotifications(): Promise<NotificationPermission | 'unsupported'> {
   if (!notificationsSupported()) return 'unsupported';
   const result = await Notification.requestPermission();
-  if (result === 'granted') await registerSW();
+  if (result === 'granted') {
+    await registerSW();
+    void subscribePush();
+  }
   return result;
 }
 
