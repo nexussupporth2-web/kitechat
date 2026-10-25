@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Download, FileText, Image as ImageIcon, MessageSquare, Paperclip, Phone, Video, X } from 'lucide-react';
+import Avatar from './Avatar.tsx';
 import KiteIcon from './KiteIcon.tsx';
 import { formatBytes } from './api.ts';
 import { phaseLabel, type Phase, type ProgressFn } from './media.ts';
@@ -142,7 +143,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
             <ArrowLeft className="w-5 h-5" />
           </button>
           <button onClick={onOpenProfile} className="flex items-center gap-3 min-w-0 text-left" aria-label={`Open ${friend.name}'s profile`}>
-          <div className="w-10 h-10 shrink-0 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold text-sm">{friend.avatar}</div>
+          <Avatar avatar={friend.avatar} photoUrl={friend.photoUrl} />
           <div className="min-w-0">
             <h3 className="text-sm font-bold text-white truncate">{friend.name}</h3>
             <div className="text-[11px] text-slate-400 flex items-center gap-1.5 h-4">

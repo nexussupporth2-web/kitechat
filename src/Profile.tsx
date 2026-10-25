@@ -13,7 +13,17 @@ interface Item {
 }
 
 interface ProfileData {
-  user: { userId: string; name: string; avatar: string; isOnline: boolean };
+  user: {
+    userId: string;
+    name: string;
+    avatar: string;
+    isOnline: boolean;
+    handle: string | null;
+    category: string;
+    photoUrl: string | null;
+    gender: string;
+    birthday: string;
+  };
   stats: { album: number; reels: number; friends: number };
   caps: { image: number; video: number };
   items: Item[];
@@ -115,7 +125,11 @@ export default function Profile({ userId, isMe, onBack, onMessage, children }: P
           <div className="relative">
             <div className="w-36 h-36 rounded-full p-1.5 bg-gradient-to-tr from-amber-400 via-rose-400 to-indigo-400 shadow-lg shadow-rose-400/30">
               <div className="w-full h-full rounded-full bg-slate-950 p-1.5">
-                <div className="w-full h-full rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center text-5xl font-bold">{data.user.avatar}</div>
+                {data.user.photoUrl ? (
+                  <img src={data.user.photoUrl} alt="" className="w-full h-full rounded-full object-cover" />
+                ) : (
+                  <div className="w-full h-full rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center text-5xl font-bold">{data.user.avatar}</div>
+                )}
               </div>
             </div>
             <span
@@ -123,8 +137,15 @@ export default function Profile({ userId, isMe, onBack, onMessage, children }: P
               title={data.user.isOnline ? 'Online' : 'Offline'}
             />
           </div>
-          <h2 className="mt-5 text-xl font-semibold text-white">@{data.user.userId.toLowerCase()}</h2>
+          <h2 className="mt-5 text-xl font-semibold text-white">@{data.user.handle ?? data.user.userId.toLowerCase()}</h2>
           <p className="text-sm text-slate-400">{data.user.name}</p>
+          {(data.user.category || data.user.gender || data.user.birthday) && (
+            <div className="mt-3 flex flex-wrap justify-center gap-2">
+              {[data.user.category, data.user.gender, data.user.birthday && `🎂 ${data.user.birthday}`].filter(Boolean).map(t => (
+                <span key={String(t)} className="px-3 py-1 rounded-full bg-slate-800 text-xs text-slate-300">{t}</span>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="px-4 mt-6">

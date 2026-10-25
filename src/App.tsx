@@ -3,10 +3,12 @@ import { io, type Socket } from 'socket.io-client';
 import { Bell, Check, ChevronRight, Copy, LogOut, MoreVertical, Phone, Sparkles, UserPlus, Users, Video, X } from 'lucide-react';
 import { api, ApiError, getToken, loadToken, setToken } from './api.ts';
 import Auth from './Auth.tsx';
+import Avatar from './Avatar.tsx';
 import Chat from './Chat.tsx';
 import CallScreen from './CallScreen.tsx';
 import Feed from './Feed.tsx';
 import Profile from './Profile.tsx';
+import ProfileSettings from './ProfileSettings.tsx';
 import { downloadSharedFile, sendFileToFriend, type MediaConfig } from './media.ts';
 import { enableNotifications, notificationState, notify, playMessageSound, registerSW, startRinging, stopRinging, unlockAudioOnFirstTap } from './notify.ts';
 import { useCall } from './useCall.ts';
@@ -100,10 +102,10 @@ function Root() {
     );
   }
   if (!user) return <Auth onAuthed={setUser} />;
-  return <Messenger key={user.userId} user={user} onLogout={logout} />;
+  return <Messenger key={user.userId} user={user} onLogout={logout} onUserChange={setUser} />;
 }
 
-function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
+function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () => void; onUserChange: (u: User) => void }) {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [friends, setFriends] = useState<Friend[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -195,7 +197,11 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
     s.on('presence-update', ({ userId, isOnline }: { userId: string; isOnline: boolean }) =>
       setFriends(prev => prev.map(f => (f.userId === userId ? { ...f, isOnline } : f)))
     );
-    s.on('friend-added', (f: Friend) => setFriends(prev => [...prev.filter(x => x.userId !== f.userId), f]));
+    s.on('friend-added', (f: Friend) => {
+      setFriends(prev => [...prev.filter(x => x.userId !== f.userId), f]);
+      loadData(); // also brings in their picture
+    });
+    s.on('profile-updated', () => loadData());
     s.on('chat-message', (msg: ChatMessage) => {
       setMessages(prev => (prev.some(m => m.id === msg.id) ? prev : [...prev, msg]));
       if (msg.senderId !== user.userId) {
@@ -330,11 +336,11 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
         <div className="flex items-center gap-3 min-w-0">
           <button
             onClick={() => setTab('chats')}
-            className="w-11 h-11 shrink-0 rounded-full bg-gradient-to-br from-cyan-500 to-indigo-600 text-accent-ink font-bold text-lg flex items-center justify-center shadow"
+            className="w-11 h-11 shrink-0 overflow-hidden rounded-full bg-gradient-to-br from-cyan-500 to-indigo-600 text-accent-ink font-bold text-lg flex items-center justify-center shadow"
             title="Chats"
             aria-label="Go to chats"
           >
-            {user.avatar}
+            {user.photoUrl ? <img src={user.photoUrl} alt="" className="w-full h-full rounded-full object-cover" /> : user.avatar}
           </button>
           <button onClick={() => setShareOpen(true)} className="px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 min-w-0" title="Share my User ID">
             <span className="font-mono text-cyan-400 truncate block">{user.userId}</span>
@@ -375,7 +381,7 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
         {tab === 'feed' ? (
           <Feed me={user.userId} />
         ) : tab === 'profile' ? (
-          <Profile key={user.userId} userId={user.userId} isMe />
+          <ProfileSettings key={user.userId} userId={user.userId} onChanged={u => onUserChange({ ...user, ...u })} />
         ) : (
         <>
         <aside className={`${selected ? 'hidden md:flex' : 'flex'} w-full md:w-80 shrink-0 bg-slate-900 border-r border-slate-800 flex-col`}>
@@ -405,7 +411,7 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
                   >
                     <div className="flex items-center gap-3 min-w-0">
                       <div className="relative shrink-0">
-                        <div className="w-10 h-10 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold text-sm">{f.avatar}</div>
+                        <Avatar avatar={f.avatar} photoUrl={f.photoUrl} />
                         <span className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-slate-900 ${f.isOnline ? 'bg-emerald-500' : 'bg-slate-600'}`} />
                       </div>
                       <div className="min-w-0">
