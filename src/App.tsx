@@ -199,8 +199,7 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
         const watching = !document.hidden && selectedRef.current === msg.senderId;
         if (watching) s.emit('mark-messages-read', { friendId: msg.senderId });
         else if (document.hidden) {
-          const name = friendsRef.current.find(f => f.userId === msg.senderId)?.name ?? msg.senderId;
-          void notify(name, msg.file ? 'Sent you a file' : msg.message, `msg-${msg.senderId}`);
+          void notify('KiteChat', 'You have a message', `msg-${msg.senderId}`);
         } else playMessageSound();
       }
     });
@@ -267,7 +266,7 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
   useEffect(() => {
     if (!incomingId) return;
     startRinging();
-    void notify('Incoming call', `${incomingId} is calling you`, 'incoming-call', true);
+    void notify('KiteChat', 'You have an incoming call', 'incoming-call', true);
     return stopRinging;
   }, [incomingId]);
 
