@@ -48,7 +48,7 @@ export function uploadToStorage(url: string, body: Blob, contentType: string, on
 export const formatBytes = (n: number) =>
   n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`;
 
-export async function api<T>(path: string, body?: unknown, method?: 'DELETE'): Promise<T> {
+export async function api<T>(path: string, body?: unknown, method?: 'DELETE' | 'PATCH'): Promise<T> {
   let res: Response;
   try {
     res = await fetch(path, {
