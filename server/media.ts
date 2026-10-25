@@ -6,6 +6,8 @@ import { r2Enabled, signPut, signGet, head, remove } from './r2.ts';
 
 const MB = 1024 * 1024;
 const HOUR = 60 * 60 * 1000;
+/** Signed links are valid for one hour. The storage library wants SECONDS here (not milliseconds). */
+const LINK_SECONDS = 60 * 60;
 
 /** Per-user limits. Change these numbers to tune what the free storage has to carry. */
 /**
@@ -219,7 +221,7 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline }: Deps) {
           ownerId: p.ownerId,
           ownerName: data.users[p.ownerId]?.name ?? p.ownerId,
           ownerAvatar: data.users[p.ownerId]?.avatar ?? '?',
-          url: await signGet(p.key, { expiresIn: HOUR })
+          url: await signGet(p.key, { expiresIn: LINK_SECONDS })
         }))
       );
       res.json({ posts: items, usedBytes: usedBytes(me.userId), quotaBytes: LIMITS.quotaBytes });
@@ -247,7 +249,7 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline }: Deps) {
     if (!r2Enabled) return res.json({ ...base, items: [] });
     try {
       const items = await Promise.all(
-        album.map(async p => ({ id: p.id, mime: p.mime, size: p.size, caption: p.caption, createdAt: p.createdAt, url: await signGet(p.key, { expiresIn: HOUR }) }))
+        album.map(async p => ({ id: p.id, mime: p.mime, size: p.size, caption: p.caption, createdAt: p.createdAt, url: await signGet(p.key, { expiresIn: LINK_SECONDS }) }))
       );
       res.json({ ...base, items });
     } catch (e) {
@@ -283,7 +285,7 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline }: Deps) {
       .sort((a, b) => b.wallpaper!.at - a.wallpaper!.at)[0];
     if (!best || !r2Enabled) return res.json({ url: null, by: null, at: 0 });
     try {
-      res.json({ url: await signGet(best.wallpaper!.key, { expiresIn: HOUR }), by: best.userId, at: best.wallpaper!.at });
+      res.json({ url: await signGet(best.wallpaper!.key, { expiresIn: LINK_SECONDS }), by: best.userId, at: best.wallpaper!.at });
     } catch (e) {
       console.error('wallpaper url failed', e);
       res.json({ url: null, by: null, at: 0 });
