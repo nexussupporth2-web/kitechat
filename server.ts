@@ -6,6 +6,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { data, messageIndex, addMessage, messagesFor, save, flush, initStore, type Message, type User } from './server/store.ts';
 import { mediaRouter } from './server/media.ts';
+import { r2Enabled, signGet } from './server/r2.ts';
 import { hashPassword, verifyPassword, signToken, verifyToken } from './server/auth.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -29,6 +30,9 @@ const publicUser = (u: User) => ({ userId: u.userId, name: u.name, avatar: u.ava
 /** userId -> set of connected socket ids (a user may have several tabs/devices). */
 const online = new Map<string, Set<string>>();
 const isOnline = (id: string) => (online.get(id)?.size ?? 0) > 0;
+/** A short-lived link to the profile picture (or null when the user has none). */
+const photoUrlOf = async (u: User): Promise<string | null> =>
+  r2Enabled && u.photo ? await signGet(u.photo.key, { expiresIn: 3600 }).catch(() => null) : null;
 const friendView = (u: User) => ({ ...publicUser(u), isOnline: isOnline(u.userId) });
 const areFriends = (a: string, b: string) => !!data.users[a]?.friends.includes(b);
 
@@ -97,7 +101,7 @@ app.post('/api/register', rateLimit(10, 60_000), (req, res) => {
   res.json({ token: signToken(id), user: publicUser(user) });
 });
 
-app.post('/api/login', rateLimit(10, 60_000), (req, res) => {
+app.post('/api/login', rateLimit(10, 60_000), async (req, res) => {
   const { userId, password } = req.body ?? {};
   if (typeof userId !== 'string' || typeof password !== 'string') {
     return res.status(400).json({ error: 'Missing credentials' });
@@ -106,19 +110,21 @@ app.post('/api/login', rateLimit(10, 60_000), (req, res) => {
   if (!user || !verifyPassword(password, user.passwordHash)) {
     return res.status(401).json({ error: 'Invalid User ID or password' });
   }
-  res.json({ token: signToken(user.userId), user: publicUser(user) });
+  res.json({ token: signToken(user.userId), user: { ...publicUser(user), photoUrl: await photoUrlOf(user) } });
 });
 
-app.get('/api/me', requireAuth, (_req, res) => {
-  res.json({ user: publicUser(res.locals.user as User) });
-});
-
-app.get('/api/friends', requireAuth, (_req, res) => {
+app.get('/api/me', requireAuth, async (_req, res) => {
   const me = res.locals.user as User;
-  res.json({ friends: me.friends.map(id => data.users[id]).filter(Boolean).map(friendView) });
+  res.json({ user: { ...publicUser(me), photoUrl: await photoUrlOf(me) } });
 });
 
-app.post('/api/friends', requireAuth, (req, res) => {
+app.get('/api/friends', requireAuth, async (_req, res) => {
+  const me = res.locals.user as User;
+  const list = me.friends.map(id => data.users[id]).filter(Boolean);
+  res.json({ friends: await Promise.all(list.map(async u => ({ ...friendView(u), photoUrl: await photoUrlOf(u) }))) });
+});
+
+app.post('/api/friends', requireAuth, async (req, res) => {
   const me = res.locals.user as User;
   const friendId = typeof req.body?.friendId === 'string' ? req.body.friendId.trim().toUpperCase() : '';
   const target = data.users[friendId];
@@ -130,7 +136,7 @@ app.post('/api/friends', requireAuth, (req, res) => {
   if (!target.friends.includes(me.userId)) target.friends.push(me.userId);
   save();
   io.to(`user:${target.userId}`).emit('friend-added', friendView(me));
-  res.json({ friend: friendView(target) });
+  res.json({ friend: { ...friendView(target), photoUrl: await photoUrlOf(target) } });
 });
 
 app.get('/api/messages', requireAuth, (_req, res) => {
@@ -387,3 +393,4 @@ start().catch(e => {
   console.error('Failed to start:', e);
   process.exit(1);
 });
+  
