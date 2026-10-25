@@ -12,6 +12,16 @@ export interface User {
   createdAt: number;
   /** Chat wallpaper picked by this user (an image in storage). */
   wallpaper?: { key: string; at: number };
+  /** Public @handle (lowercase letters, numbers, dots, underscores). Separate from the login User ID. */
+  handle?: string;
+  /** Profile picture (an image in storage). Without it the first letter of the name is shown. */
+  photo?: { key: string; at: number };
+  category?: string;
+  gender?: string;
+  /** YYYY-MM-DD */
+  birthday?: string;
+  showGender?: boolean;
+  showBirthday?: boolean;
 }
 
 export type MsgStatus = 'sent' | 'received' | 'read';

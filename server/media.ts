@@ -19,6 +19,7 @@ export const LIMITS = {
   reel: { videoBytes: 15 * MB, maxVideoSec: 30 },
   share: { bytes: 50 * MB, mediaOriginalBytes: 300 * MB, pendingPerSender: 5, ttlMs: 24 * HOUR },
   wallpaperBytes: 1 * MB,
+  avatarBytes: 500 * 1024,
   /** How many of each a user can keep. Adding one more removes the oldest. */
   caps: { story: 2, reel: 10, albumImage: 10, albumVideo: 10 },
   quotaBytes: 200 * MB
@@ -113,6 +114,11 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline }: Deps) {
       const max = mime in IMAGE_TYPES ? LIMITS.story.imageBytes : LIMITS.reel.videoBytes;
       if (size > max) return res.status(400).json({ error: `Too large even after compression (limit ${max / MB} MB)` });
       key = `album/${me.userId}/${crypto.randomUUID()}.${ext}`;
+    } else if (kind === 'avatar') {
+      const ext = IMAGE_TYPES[mime];
+      if (!ext) return res.status(400).json({ error: 'Profile picture must be a JPG, PNG or WebP photo' });
+      if (size > LIMITS.avatarBytes) return res.status(400).json({ error: 'Profile picture is too large even after compression' });
+      key = `avatars/${me.userId}/${crypto.randomUUID()}.${ext}`;
     } else if (kind === 'wallpaper') {
       const ext = IMAGE_TYPES[mime];
       if (!ext) return res.status(400).json({ error: 'Wallpaper must be a JPG, PNG or WebP photo' });
@@ -241,12 +247,28 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline }: Deps) {
     }
     const mine = data.posts.filter(p => p.ownerId === owner.userId);
     const album = mine.filter(p => p.kind === 'album').sort((a, b) => b.createdAt - a.createdAt);
+    const self = owner.userId === me.userId;
+    let photoUrl: string | null = null;
+    if (r2Enabled && owner.photo) photoUrl = await signGet(owner.photo.key, { expiresIn: LINK_SECONDS }).catch(() => null);
     const base = {
-      user: { userId: owner.userId, name: owner.name, avatar: owner.avatar, isOnline: isOnline(owner.userId) },
+      user: {
+        userId: owner.userId,
+        name: owner.name,
+        avatar: owner.avatar,
+        isOnline: isOnline(owner.userId),
+        handle: owner.handle ?? null,
+        category: owner.category ?? '',
+        photoUrl,
+        // Gender and birthday are shown to friends only if the owner allows it.
+        gender: self || owner.showGender ? (owner.gender ?? '') : '',
+        birthday: self || owner.showBirthday ? (owner.birthday ?? '') : '',
+        showGender: !!owner.showGender,
+        showBirthday: !!owner.showBirthday
+      },
       stats: { album: album.length, reels: mine.filter(p => p.kind === 'reel').length, friends: owner.friends.length },
       caps: { image: LIMITS.caps.albumImage, video: LIMITS.caps.albumVideo }
     };
-    if (!r2Enabled) return res.json({ ...base, items: [] });
+    if (req.query.lite || !r2Enabled) return res.json({ ...base, items: [] });
     try {
       const items = await Promise.all(
         album.map(async p => ({ id: p.id, mime: p.mime, size: p.size, caption: p.caption, createdAt: p.createdAt, url: await signGet(p.key, { expiresIn: LINK_SECONDS }) }))
@@ -256,6 +278,113 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline }: Deps) {
       console.error('profile failed', e);
       res.status(500).json({ error: `Could not load the profile (${reason(e)})` });
     }
+  });
+
+  // ---------- editing my own profile ----------
+
+  const CATEGORIES = ['Digital Creator', 'Software Engineer', 'Musician', 'Artist', 'Photographer', 'Student', 'Entrepreneur', 'Teacher', 'Other'];
+  const GENDERS = ['Female', 'Male', 'Non-binary', 'Other', 'Prefer not to say'];
+  const HANDLE_RE = /^(?![.])(?!.*\.\.)(?!.*[.]$)[a-z0-9._]{3,30}$/;
+
+  const handleProblem = (handle: string, meId: string): string | null => {
+    if (!HANDLE_RE.test(handle)) return 'Use 3-30 lowercase letters, numbers, dots or underscores (no spaces).';
+    for (const u of Object.values(data.users)) {
+      if (u.userId === meId) continue;
+      if (u.handle === handle || u.userId.toLowerCase() === handle) return 'That username is already taken.';
+    }
+    return null;
+  };
+
+  router.get('/handle-check', requireAuth, (req, res) => {
+    const me = res.locals.user as User;
+    const handle = String(req.query.handle ?? '').trim().toLowerCase();
+    const problem = handleProblem(handle, me.userId);
+    res.json({ ok: !problem, reason: problem });
+  });
+
+  /** Friends reload their list so the new name / picture shows up at once. */
+  const profileChanged = (u: User) => {
+    for (const id of u.friends) io.to(`user:${id}`).emit('profile-updated', { userId: u.userId });
+  };
+
+  router.patch('/profile', requireAuth, (req, res) => {
+    const me = res.locals.user as User;
+    const b = req.body ?? {};
+    const bad = (error: string) => res.status(400).json({ error });
+
+    if (b.name !== undefined) {
+      const name = String(b.name).trim();
+      if (name.length < 1 || name.length > 30) return bad('Name must be 1-30 characters');
+      if (name !== me.name) {
+        me.name = name;
+        me.avatar = Array.from(name)[0]?.toUpperCase() ?? '?';
+      }
+    }
+    if (b.handle !== undefined) {
+      const handle = String(b.handle).trim().toLowerCase();
+      if (handle === '') delete me.handle;
+      else {
+        const problem = handleProblem(handle, me.userId);
+        if (problem) return bad(problem);
+        me.handle = handle;
+      }
+    }
+    if (b.category !== undefined) {
+      if (b.category !== '' && !CATEGORIES.includes(b.category)) return bad('Invalid category');
+      if (b.category === '') delete me.category;
+      else me.category = b.category;
+    }
+    if (b.gender !== undefined) {
+      if (b.gender !== '' && !GENDERS.includes(b.gender)) return bad('Invalid gender');
+      if (b.gender === '') delete me.gender;
+      else me.gender = b.gender;
+    }
+    if (b.birthday !== undefined) {
+      if (b.birthday === '') delete me.birthday;
+      else {
+        const t = Date.parse(String(b.birthday));
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.birthday)) || Number.isNaN(t) || t > Date.now() || t < Date.parse('1900-01-01')) return bad('Invalid birthday');
+        me.birthday = String(b.birthday);
+      }
+    }
+    if (typeof b.showGender === 'boolean') me.showGender = b.showGender;
+    if (typeof b.showBirthday === 'boolean') me.showBirthday = b.showBirthday;
+    save();
+    profileChanged(me);
+    res.json({ user: { userId: me.userId, name: me.name, avatar: me.avatar } });
+  });
+
+  router.post('/profile/photo', requireAuth, needStorage, async (req, res) => {
+    const me = res.locals.user as User;
+    const { key } = req.body ?? {};
+    if (typeof key !== 'string' || !key.startsWith(`avatars/${me.userId}/`)) return res.status(400).json({ error: 'Invalid request' });
+    try {
+      const info = await head(key);
+      if (!info) return res.status(400).json({ error: 'Upload not found. Please try again.' });
+      if (info.size > LIMITS.avatarBytes || !(info.type in IMAGE_TYPES)) {
+        await remove(key).catch(() => {});
+        return res.status(413).json({ error: 'Picture is too large' });
+      }
+      const old = me.photo?.key;
+      me.photo = { key, at: Date.now() };
+      save();
+      if (old && old !== key) await remove(old).catch(() => {});
+      profileChanged(me);
+      res.json({ ok: true });
+    } catch (e) {
+      console.error('photo failed', e);
+      res.status(500).json({ error: 'Could not save the picture' });
+    }
+  });
+
+  router.delete('/profile/photo', requireAuth, async (_req, res) => {
+    const me = res.locals.user as User;
+    const old = me.photo?.key;
+    delete me.photo;
+    save();
+    if (old && r2Enabled) await remove(old).catch(() => {});
+    profileChanged(me);
+    res.json({ ok: true });
   });
 
   router.delete('/posts/:id', requireAuth, needStorage, async (req, res) => {
