@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ArrowLeft, MessageSquare, Play, Plus, Trash2, X } from 'lucide-react';
 import { api } from './api.ts';
 import { deletePost, phaseLabel, publishPost, type MediaConfig, type Phase } from './media.ts';
@@ -26,12 +26,14 @@ interface Props {
   onBack?: () => void;
   /** Shown for a friend's profile. */
   onMessage?: () => void;
+  /** Extra content shown under the album (used by the Stories & Reels page). */
+  children?: ReactNode;
 }
 
 const isVideo = (i: Item) => i.mime.startsWith('video/');
 
 /** A profile with a photo/video album. The owner can add and delete; friends can look. */
-export default function Profile({ userId, isMe, onBack, onMessage }: Props) {
+export default function Profile({ userId, isMe, onBack, onMessage, children }: Props) {
   const [data, setData] = useState<ProfileData | null>(null);
   const [cfg, setCfg] = useState<MediaConfig | null>(null);
   const [tab, setTab] = useState<'videos' | 'images'>('images');
@@ -196,6 +198,7 @@ export default function Profile({ userId, isMe, onBack, onMessage }: Props) {
             ))}
           </div>
         )}
+        {children}
       </div>
 
       {open && (
