@@ -36,7 +36,7 @@ const isVideo = (i: Item) => i.mime.startsWith('video/');
 export default function Profile({ userId, isMe, onBack, onMessage, children }: Props) {
   const [data, setData] = useState<ProfileData | null>(null);
   const [cfg, setCfg] = useState<MediaConfig | null>(null);
-  const [tab, setTab] = useState<'videos' | 'images'>('images');
+  const [tab, setTab] = useState<'all' | 'videos' | 'images'>('all');
   const [error, setError] = useState('');
   const [progress, setProgress] = useState<{ phase: Phase; p: number } | null>(null);
   const [open, setOpen] = useState<Item | null>(null);
@@ -94,10 +94,9 @@ export default function Profile({ userId, isMe, onBack, onMessage, children }: P
     );
   }
 
-  const items = data.items.filter(i => (tab === 'videos' ? isVideo(i) : !isVideo(i)));
+  const items = data.items.filter(i => (tab === 'all' ? true : tab === 'videos' ? isVideo(i) : !isVideo(i)));
   const stats: [number, string][] = [
     [data.stats.album, 'Album'],
-    [data.stats.reels, 'Reels'],
     [data.stats.friends, 'Friends']
   ];
 
@@ -166,20 +165,20 @@ export default function Profile({ userId, isMe, onBack, onMessage, children }: P
           ))}
         </div>
 
-        <div className="mt-6 grid grid-cols-2 border-b border-slate-800">
-          {(['videos', 'images'] as const).map(t => (
+        <div className="mt-6 grid grid-cols-3 border-b border-slate-800">
+          {(['all', 'videos', 'images'] as const).map(t => (
             <button
               key={t}
               onClick={() => setTab(t)}
               className={`py-3 text-base font-medium border-b-2 -mb-px transition-colors ${tab === t ? 'text-white border-cyan-500' : 'text-slate-500 border-transparent'}`}
             >
-              {t === 'videos' ? 'Videos' : 'Images'}
+              {t === 'all' ? 'All' : t === 'videos' ? 'Videos' : 'Images'}
             </button>
           ))}
         </div>
 
         {items.length === 0 ? (
-          <p className="text-center text-sm text-slate-500 py-12">{isMe ? `No ${tab} yet. Tap “Add photo or video”.` : `No ${tab} yet.`}</p>
+          <p className="text-center text-sm text-slate-500 py-12">{isMe ? `${tab === 'all' ? 'Nothing here' : `No ${tab}`} yet. Tap “Add photo or video”.` : `${tab === 'all' ? 'Nothing here' : `No ${tab}`} yet.`}</p>
         ) : (
           <div className="grid grid-cols-3 gap-2 p-2">
             {items.map(item => (
