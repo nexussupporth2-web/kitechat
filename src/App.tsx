@@ -1,6 +1,6 @@
 import { Component, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { io, type Socket } from 'socket.io-client';
-import { Bell, Check, ChevronRight, Copy, LogOut, Phone, Radio, Sparkles, UserPlus, Users, Video, X } from 'lucide-react';
+import { Bell, Check, ChevronRight, Copy, LogOut, MoreVertical, Phone, Sparkles, UserPlus, Users, Video, X } from 'lucide-react';
 import { api, ApiError, getToken, loadToken, setToken } from './api.ts';
 import Auth from './Auth.tsx';
 import Chat from './Chat.tsx';
@@ -115,6 +115,7 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [addError, setAddError] = useState('');
   const [copied, setCopied] = useState(false);
   const [tab, setTab] = useState<'chats' | 'feed' | 'profile'>('chats');
+  const [menuOpen, setMenuOpen] = useState(false);
   const [profileFor, setProfileFor] = useState<string | null>(null);
   const [mediaCfg, setMediaCfg] = useState<MediaConfig | null>(null);
   const [connected, setConnected] = useState(true);
@@ -272,6 +273,11 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
     return stopRinging;
   }, [incomingId]);
 
+  const goTo = (t: 'chats' | 'feed' | 'profile') => {
+    setTab(t);
+    setMenuOpen(false);
+  };
+
   const turnOnNotifications = async () => setNotifState(await enableNotifications());
 
   return (
@@ -319,43 +325,49 @@ function Messenger({ user, onLogout }: { user: User; onLogout: () => void }) {
       )}
 
       <header
-        className={`${selected && tab === 'chats' ? 'hidden md:flex' : 'flex'} items-center justify-between gap-2 px-4 sm:px-6 py-3 border-b border-slate-800 bg-slate-900/60 shrink-0`}
+        className={`${selected && tab === 'chats' ? 'hidden md:flex' : 'flex'} items-center justify-between gap-2 px-4 sm:px-6 py-3 border-b border-slate-800 bg-slate-900/60 shrink-0 relative z-30`}
       >
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-cyan-500 to-indigo-600 flex items-center justify-center">
-            <Radio className="w-5 h-5 text-accent-ink" />
-          </div>
-          <span className="hidden sm:inline text-lg font-bold tracking-tight text-white">KiteChat</span>
+        <div className="flex items-center gap-3 min-w-0">
+          <button
+            onClick={() => setTab('chats')}
+            className="w-11 h-11 shrink-0 rounded-full bg-gradient-to-br from-cyan-500 to-indigo-600 text-accent-ink font-bold text-lg flex items-center justify-center shadow"
+            title="Chats"
+            aria-label="Go to chats"
+          >
+            {user.avatar}
+          </button>
+          <button onClick={() => setShareOpen(true)} className="px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 min-w-0" title="Share my User ID">
+            <span className="font-mono text-cyan-400 truncate block">{user.userId}</span>
+          </button>
         </div>
-        {filesEnabled && (
-          <nav className="flex bg-slate-950 p-1 rounded-xl border border-slate-800" aria-label="Sections">
-            {(['chats', 'feed', 'profile'] as const).map(t => (
-              <button
-                key={t}
-                onClick={() => setTab(t)}
-                className={`whitespace-nowrap px-3 py-1 text-xs font-semibold rounded-lg transition-colors ${tab === t ? 'bg-cyan-500 text-accent-ink' : 'text-slate-400 hover:text-white'}`}
-              >
-                {t === 'chats' ? 'Chats' : t === 'feed' ? 'Stories' : 'Profile'}
-              </button>
-            ))}
-          </nav>
-        )}
-        <div className="flex items-center gap-2 sm:gap-3">
+        <div className="flex items-center gap-2 relative">
           {notifState === 'default' && (
-            <button onClick={turnOnNotifications} className="w-8 h-8 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center" title="Turn on notifications" aria-label="Turn on notifications">
+            <button onClick={turnOnNotifications} className="w-9 h-9 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center" title="Turn on notifications" aria-label="Turn on notifications">
               <Bell className="w-4 h-4" />
             </button>
           )}
-          <button onClick={() => setShareOpen(true)} className="px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700">
-            <span className="font-mono text-cyan-400">{user.userId}</span>
+          <button onClick={() => setMenuOpen(o => !o)} className="w-9 h-9 rounded-lg hover:bg-slate-800 text-slate-300 flex items-center justify-center" aria-label="Menu" aria-expanded={menuOpen}>
+            <MoreVertical className="w-5 h-5" />
           </button>
-          <div className="hidden sm:flex items-center gap-2 bg-slate-800/80 px-3 py-1.5 rounded-full border border-slate-700/60 text-xs text-slate-300">
-            <div className="w-6 h-6 rounded-full bg-cyan-500/20 text-cyan-400 flex items-center justify-center font-bold">{user.avatar}</div>
-            <span>{user.name}</span>
-          </div>
-          <button onClick={onLogout} className="w-8 h-8 rounded-lg hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 flex items-center justify-center" title="Sign out">
-            <LogOut className="w-4 h-4" />
-          </button>
+          {menuOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
+              <div role="menu" className="absolute right-0 top-11 z-50 w-56 bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl py-1.5 overflow-hidden">
+                {tab !== 'chats' && (
+                  <button role="menuitem" onClick={() => goTo('chats')} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">Chats</button>
+                )}
+                {filesEnabled && (
+                  <>
+                    <button role="menuitem" onClick={() => goTo('feed')} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">Stories &amp; Reels</button>
+                    <button role="menuitem" onClick={() => goTo('profile')} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">Profile Settings</button>
+                  </>
+                )}
+                <button role="menuitem" onClick={() => { setMenuOpen(false); onLogout(); }} className="w-full text-left px-4 py-3 text-sm text-rose-400 hover:bg-slate-800 flex items-center gap-2">
+                  <LogOut className="w-4 h-4" /> Logout
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </header>
 
