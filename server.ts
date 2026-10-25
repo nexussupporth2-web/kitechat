@@ -7,6 +7,7 @@ import crypto from 'crypto';
 import { data, messageIndex, addMessage, messagesFor, save, flush, initStore, type Message, type User } from './server/store.ts';
 import { mediaRouter } from './server/media.ts';
 import { r2Enabled, signGet } from './server/r2.ts';
+import { canPush, pushEnabled, sendPush, vapidPublicKey } from './server/push.ts';
 import { hashPassword, verifyPassword, signToken, verifyToken } from './server/auth.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -139,6 +140,40 @@ app.post('/api/friends', requireAuth, async (req, res) => {
   res.json({ friend: { ...friendView(target), photoUrl: await photoUrlOf(target) } });
 });
 
+// ----- notifications for a closed app (Web Push) -----
+
+app.get('/api/push/key', requireAuth, (_req, res) => {
+  res.json({ key: vapidPublicKey });
+});
+
+app.post('/api/push/subscribe', requireAuth, (req, res) => {
+  const me = res.locals.user as User;
+  const sub = req.body?.subscription;
+  const ok =
+    pushEnabled &&
+    typeof sub?.endpoint === 'string' &&
+    sub.endpoint.startsWith('https://') &&
+    sub.endpoint.length < 1000 &&
+    typeof sub?.keys?.p256dh === 'string' &&
+    typeof sub?.keys?.auth === 'string';
+  if (!ok) return res.status(400).json({ error: 'Invalid subscription' });
+  const list = (me.pushSubs ?? []).filter(s => s.endpoint !== sub.endpoint);
+  list.push({ endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } });
+  me.pushSubs = list.slice(-5); // at most 5 devices
+  save();
+  res.json({ ok: true });
+});
+
+app.post('/api/push/unsubscribe', requireAuth, (req, res) => {
+  const me = res.locals.user as User;
+  const endpoint = req.body?.endpoint;
+  if (typeof endpoint === 'string' && me.pushSubs) {
+    me.pushSubs = me.pushSubs.filter(s => s.endpoint !== endpoint);
+    save();
+  }
+  res.json({ ok: true });
+});
+
 app.get('/api/messages', requireAuth, (_req, res) => {
   res.json({ messages: messagesFor((res.locals.user as User).userId) });
 });
@@ -187,6 +222,25 @@ function leaveRoom(socket: Socket) {
   if (userRoom.get(userId) === roomId) userRoom.delete(userId);
 }
 
+/** A call to someone whose app is closed waits here (for a short time) until they open the app. */
+const pendingCalls = new Map<string, { roomId: string; callerId: string; callerName: string; type: 'audio' | 'video'; until: number }>();
+const PENDING_CALL_MS = 50_000;
+
+/** Leaves a "Missed call" line in the chat when the person never got to see the call. */
+function missedCall(callerId: string, calleeId: string) {
+  const msg: Message = {
+    id: crypto.randomUUID(),
+    senderId: callerId,
+    recipientId: calleeId,
+    message: '📞 Missed call',
+    timestamp: Date.now(),
+    status: isOnline(calleeId) ? 'received' : 'sent',
+    reactions: {}
+  };
+  addMessage(msg);
+  io.to(`user:${calleeId}`).to(`user:${callerId}`).emit('chat-message', msg);
+}
+
 io.on('connection', socket => {
   const userId: string = socket.data.userId;
   const me = data.users[userId];
@@ -214,6 +268,16 @@ io.on('connection', socket => {
     save();
   }
 
+  // A call that came in while my app was closed: ring now (after the page has finished starting).
+  const waiting = pendingCalls.get(userId);
+  if (waiting) {
+    pendingCalls.delete(userId);
+    if (waiting.until > Date.now() && calls.has(waiting.roomId) && !userRoom.has(userId)) {
+      const { until: _until, ...invite } = waiting;
+      setTimeout(() => socket.connected && socket.emit('incoming-call', invite), 1500);
+    }
+  }
+
   socket.on('chat-message', ({ recipientId, message }: { recipientId?: string; message?: string }) => {
     if (typeof recipientId !== 'string' || typeof message !== 'string') return;
     const text = message.trim().slice(0, 2000);
@@ -229,6 +293,7 @@ io.on('connection', socket => {
     };
     addMessage(msg);
     io.to(`user:${recipientId}`).to(`user:${userId}`).emit('chat-message', msg);
+    if (!isOnline(recipientId)) void sendPush(data.users[recipientId], { kind: 'message', title: 'KiteChat', body: 'You have a message', tag: `msg-${userId}` });
   });
 
   socket.on('mark-messages-read', ({ friendId }: { friendId?: string }) => {
@@ -276,7 +341,11 @@ io.on('connection', socket => {
       if (typeof recipientId !== 'string' || typeof roomId !== 'string' || !ROOM_RE.test(roomId)) {
         return reply({ ok: false, error: 'Invalid call' });
       }
-      if (!areFriends(userId, recipientId)) return reply({ ok: false, error: 'Not a friend' });      if (!isOnline(recipientId)) return reply({ ok: false, error: `${data.users[recipientId].name} is offline` });
+      if (!areFriends(userId, recipientId)) return reply({ ok: false, error: 'Not a friend' });
+      const calleeOnline = isOnline(recipientId);
+      if (!calleeOnline && !canPush(data.users[recipientId])) {
+        return reply({ ok: false, error: `${data.users[recipientId].name} is offline and has not turned on notifications yet` });
+      }
       if (userRoom.has(recipientId)) return reply({ ok: false, error: `${data.users[recipientId].name} is busy` });
       if (calls.has(roomId)) return reply({ ok: false, error: 'Invalid call' });
 
@@ -286,12 +355,26 @@ io.on('connection', socket => {
         if (!room || room.size === 0) calls.delete(roomId);
       }, 120_000).unref();
 
-      io.to(`user:${recipientId}`).emit('incoming-call', {
+      const invite = {
         roomId,
         callerId: userId,
         callerName: me.name,
-        type: type === 'audio' ? 'audio' : 'video'
-      });
+        type: (type === 'audio' ? 'audio' : 'video') as 'audio' | 'video'
+      };
+      if (calleeOnline) {
+        io.to(`user:${recipientId}`).emit('incoming-call', invite);
+      } else {
+        // Their app is closed: send a notification and keep the call waiting for a moment.
+        pendingCalls.set(recipientId, { ...invite, until: Date.now() + PENDING_CALL_MS });
+        void sendPush(data.users[recipientId], { kind: 'call', title: 'KiteChat', body: 'You have an incoming call', tag: 'incoming-call' });
+        setTimeout(() => {
+          const p = pendingCalls.get(recipientId);
+          if (p && p.roomId === roomId) {
+            pendingCalls.delete(recipientId);
+            missedCall(userId, recipientId);
+          }
+        }, PENDING_CALL_MS).unref();
+      }
       reply({ ok: true });
     }
   );
@@ -308,6 +391,11 @@ io.on('connection', socket => {
     const call = typeof roomId === 'string' ? calls.get(roomId) : undefined;
     if (!call || call.callerId !== userId) return;
     io.to(`user:${call.calleeId}`).emit('call-cancelled', { roomId });
+    const p = pendingCalls.get(call.calleeId);
+    if (p && p.roomId === roomId) {
+      pendingCalls.delete(call.calleeId);
+      missedCall(userId, call.calleeId);
+    }
   });
 
   socket.on(
@@ -356,7 +444,15 @@ io.on('connection', socket => {
 
 async function start() {
   await initStore();
-  app.use('/api', mediaRouter({ io, requireAuth, areFriends, isOnline }));
+  app.use('/api', mediaRouter({
+      io,
+      requireAuth,
+      areFriends,
+      isOnline,
+      notifyOffline: (recipientId, senderId) => {
+        if (!isOnline(recipientId)) void sendPush(data.users[recipientId], { kind: 'message', title: 'KiteChat', body: 'You have a message', tag: `msg-${senderId}` });
+      }
+    }));
 
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
@@ -393,4 +489,3 @@ start().catch(e => {
   console.error('Failed to start:', e);
   process.exit(1);
 });
-  
