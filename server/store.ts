@@ -45,6 +45,8 @@ export interface Message {
   status: MsgStatus;
   reactions: Record<string, string>;
   file?: FileInfo;
+  /** Sent by the admin to everyone at once. */
+  broadcast?: boolean;
 }
 
 export interface Post {
