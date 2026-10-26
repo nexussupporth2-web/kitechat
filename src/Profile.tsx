@@ -139,37 +139,43 @@ export default function Profile({ userId, isMe, onBack, onMessage, children }: P
   return (
     <div className="flex-1 overflow-y-auto bg-slate-950">
       <div className="max-w-xl mx-auto pb-10">
-        {onBack && (
-          <div className="p-3">
-            <button onClick={onBack} className="w-10 h-10 rounded-full hover:bg-slate-800 flex items-center justify-center text-slate-300" aria-label="Back">
+        {/* Banner at the back, logo overlapping its bottom edge, then name and ID in the centre */}
+        <div className="relative">
+          {data.business.coverUrl ? (
+            <img src={data.business.coverUrl} alt="" className="w-full h-40 object-cover" />
+          ) : (
+            <div className="w-full h-40 bg-gradient-to-tr from-indigo-500/30 via-rose-400/20 to-amber-300/30" />
+          )}
+          {onBack && (
+            <button onClick={onBack} className="absolute top-3 left-3 w-10 h-10 rounded-full bg-black/50 text-fixed-white flex items-center justify-center" aria-label="Back">
               <ArrowLeft className="w-5 h-5" />
             </button>
-          </div>
-        )}
+          )}
+        </div>
 
-        <div className="flex flex-col items-center pt-4 px-4">
+        <div className="flex flex-col items-center px-4 -mt-14">
           <div className="relative">
             <div
               onClick={hasStatus ? () => setStatusAt(0) : undefined}
               role={hasStatus ? 'button' : undefined}
               aria-label={hasStatus ? 'View status' : undefined}
-              className={`w-36 h-36 rounded-full p-1.5 ${hasStatus ? 'status-ring cursor-pointer bg-gradient-to-tr from-amber-400 via-rose-400 to-indigo-400' : 'bg-slate-800'}`}
+              className={`w-28 h-28 rounded-full p-1 ${hasStatus ? 'status-ring cursor-pointer bg-gradient-to-tr from-amber-400 via-rose-400 to-indigo-400' : 'bg-slate-950'}`}
             >
-              <div className="w-full h-full rounded-full bg-slate-950 p-1.5">
+              <div className="w-full h-full rounded-full bg-slate-950 p-1">
                 {data.user.photoUrl ? (
                   <img src={data.user.photoUrl} alt="" className="w-full h-full rounded-full object-cover" />
                 ) : (
-                  <div className="w-full h-full rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center text-5xl font-bold">{data.user.avatar}</div>
+                  <div className="w-full h-full rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center text-4xl font-bold">{data.user.avatar}</div>
                 )}
               </div>
             </div>
             <span
-              className={`absolute bottom-2 right-2 w-8 h-8 rounded-full border-4 border-slate-950 ${data.user.isOnline ? 'bg-emerald-500' : 'bg-slate-600'}`}
+              className={`absolute bottom-1 right-1 w-6 h-6 rounded-full border-4 border-slate-950 ${data.user.isOnline ? 'bg-emerald-500' : 'bg-slate-600'}`}
               title={data.user.isOnline ? 'Online' : 'Offline'}
             />
           </div>
-          <h2 className="mt-5 text-xl font-semibold text-white">@{data.user.handle ?? data.user.userId.toLowerCase()}</h2>
-          <p className="text-sm text-slate-400">{data.user.name}</p>
+          <h2 className="mt-3 text-2xl font-bold text-white text-center break-words max-w-full">{data.user.name}</h2>
+          <p className="text-sm text-slate-400 font-mono tracking-wide text-center">{data.user.userId}</p>
           {(data.user.category || data.user.gender || data.user.birthday) && (
             <div className="mt-3 flex flex-wrap justify-center gap-2">
               {[data.user.category, data.user.gender, data.user.birthday && `🎂 ${data.user.birthday}`].filter(Boolean).map(t => (
@@ -249,7 +255,7 @@ export default function Profile({ userId, isMe, onBack, onMessage, children }: P
             ))}
           </div>
         )}
-        {!isMe && <BusinessInfo b={data.business} />}
+        {!isMe && <BusinessInfo b={data.business} hideCover />}
         {children}
       </div>
 

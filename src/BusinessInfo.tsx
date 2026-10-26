@@ -45,13 +45,13 @@ const Row = ({ icon, children }: { icon: React.ReactNode; children: React.ReactN
 const link = 'text-cyan-400 underline underline-offset-2';
 
 /** Read-only business profile: cover, details, hours, links and the product catalogue. */
-export default function BusinessInfo({ b }: { b: Business }) {
+export default function BusinessInfo({ b, hideCover }: { b: Business; hideCover?: boolean }) {
   const has = b.businessName || b.description || b.address || b.mapLink || b.email || b.website || b.phone || b.about || b.coverUrl || b.products.length || Object.keys(b.socials).length;
   if (!has) return null;
   const today = (new Date().getDay() + 6) % 7;
   return (
     <div className="mt-6">
-      {b.coverUrl && <img src={b.coverUrl} alt="" className="w-full h-36 object-cover" />}
+      {b.coverUrl && !hideCover && <img src={b.coverUrl} alt="" className="w-full h-36 object-cover" />}
       <div className="px-4 mt-4 space-y-4">
         {(b.businessName || b.bizCategory) && (
           <div>
