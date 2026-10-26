@@ -204,6 +204,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
                       mine ? 'bg-cyan-600 text-accent-ink rounded-br-sm' : 'bg-slate-900 border border-slate-800 text-slate-200 rounded-bl-sm'
                     }`}
                   >
+                    {msg.broadcast && <div className="text-[10px] font-semibold uppercase tracking-wider opacity-70 mb-1">📢 Broadcast</div>}
                     {msg.file ? (
                       <div className="flex items-center gap-3 min-w-[12rem]">
                         <FileText className="w-8 h-8 shrink-0 opacity-80" />

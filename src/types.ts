@@ -7,6 +7,7 @@ export interface User {
   avatar: string;
   /** Link to the profile picture, if the user has one. */
   photoUrl?: string | null;
+  isAdmin?: boolean;
 }
 
 export interface Friend extends User {
@@ -22,6 +23,7 @@ export interface ChatMessage {
   status: MsgStatus;
   reactions: Record<string, string>;
   file?: { id: string; name: string; size: number; gone: boolean };
+  broadcast?: boolean;
 }
 
 export interface FeedPost {

@@ -118,6 +118,10 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
   const [copied, setCopied] = useState(false);
   const [tab, setTab] = useState<'chats' | 'feed' | 'profile'>('chats');
   const [menuOpen, setMenuOpen] = useState(false);
+  const [broadcastOpen, setBroadcastOpen] = useState(false);
+  const [broadcastText, setBroadcastText] = useState('');
+  const [broadcastBusy, setBroadcastBusy] = useState(false);
+  const [broadcastNote, setBroadcastNote] = useState('');
   const [profileFor, setProfileFor] = useState<string | null>(null);
   const [mediaCfg, setMediaCfg] = useState<MediaConfig | null>(null);
   const [connected, setConnected] = useState(true);
@@ -279,6 +283,24 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
     return stopRinging;
   }, [incomingId]);
 
+  const sendBroadcast = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const text = broadcastText.trim();
+    if (!text || broadcastBusy) return;
+    if (!window.confirm('Send this message to everyone?')) return;
+    setBroadcastBusy(true);
+    setBroadcastNote('');
+    try {
+      const r = await api<{ sent: number }>('/api/broadcast', { message: text });
+      setBroadcastText('');
+      setBroadcastNote(`Sent to ${r.sent} ${r.sent === 1 ? 'person' : 'people'}.`);
+    } catch (err) {
+      setBroadcastNote(err instanceof ApiError ? err.message : 'Could not send the broadcast');
+    } finally {
+      setBroadcastBusy(false);
+    }
+  };
+
   const goTo = (t: 'chats' | 'feed' | 'profile') => {
     setTab(t);
     setMenuOpen(false);
@@ -368,6 +390,11 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
                     <button role="menuitem" onClick={() => goTo('profile')} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">Profile Settings</button>
                   </>
                 )}
+                {user.isAdmin && (
+                  <button role="menuitem" onClick={() => { setMenuOpen(false); setBroadcastNote(''); setBroadcastOpen(true); }} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">
+                    📢 Send broadcast
+                  </button>
+                )}
                 <button role="menuitem" onClick={() => { setMenuOpen(false); onLogout(); }} className="w-full text-left px-4 py-3 text-sm text-rose-400 hover:bg-slate-800 flex items-center gap-2">
                   <LogOut className="w-4 h-4" /> Logout
                 </button>
@@ -399,7 +426,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
                 <p className="text-xs">No friends yet. Tap Add and enter their User ID.</p>
               </div>
             ) : (
-              friends.map(f => {
+              [...friends].sort((a, b) => Number(!!b.isAdmin) - Number(!!a.isAdmin)).map(f => {
                 const n = unread(f.userId);
                 return (
                   <button
@@ -415,7 +442,10 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
                         <span className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-slate-900 ${f.isOnline ? 'bg-emerald-500' : 'bg-slate-600'}`} />
                       </div>
                       <div className="min-w-0">
-                        <h4 className="text-sm font-semibold text-white truncate">{f.name}</h4>
+                        <h4 className="text-sm font-semibold text-white truncate">
+                          {f.name}
+                          {f.isAdmin && <span className="ml-2 align-middle px-1.5 py-0.5 rounded-md bg-cyan-500/20 text-cyan-400 text-[10px] font-semibold">Admin</span>}
+                        </h4>
                         <span className="text-[10px] font-mono text-cyan-400">{f.userId}</span>
                       </div>
                     </div>
@@ -495,6 +525,28 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
             }}
           />
         </div>
+      )}
+
+      {broadcastOpen && (
+        <Modal onClose={() => !broadcastBusy && setBroadcastOpen(false)}>
+          <h3 className="text-lg font-bold text-white mb-1">📢 Broadcast</h3>
+          <p className="text-xs text-slate-400 mb-4">This message goes to everyone's chat with you, as a normal message marked “Broadcast”.</p>
+          <form onSubmit={sendBroadcast} className="space-y-3">
+            <textarea
+              value={broadcastText}
+              onChange={e => setBroadcastText(e.target.value)}
+              maxLength={2000}
+              rows={6}
+              placeholder="What's new in KiteChat…"
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-cyan-500 resize-none"
+            />
+            <div className="text-[11px] text-slate-500 text-right">{broadcastText.length}/2000</div>
+            {broadcastNote && <p role="status" className="text-xs text-cyan-400">{broadcastNote}</p>}
+            <button type="submit" disabled={broadcastBusy || !broadcastText.trim()} className="w-full h-11 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-accent-ink font-semibold rounded-xl text-sm">
+              {broadcastBusy ? 'Sending…' : 'Send to everyone'}
+            </button>
+          </form>
+        </Modal>
       )}
 
       {addOpen && (
