@@ -250,6 +250,8 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
     const mine = data.posts.filter(p => p.ownerId === owner.userId);
     const album = mine.filter(p => p.kind === 'album').sort((a, b) => b.createdAt - a.createdAt);
     const self = owner.userId === me.userId;
+    const nowTs = Date.now();
+    const live = mine.filter(p => p.kind === 'story' && (p.expiresAt === null || p.expiresAt > nowTs)).sort((a, b) => a.createdAt - b.createdAt);
     let photoUrl: string | null = null;
     if (r2Enabled && owner.photo) photoUrl = await signGet(owner.photo.key, { expiresIn: LINK_SECONDS }).catch(() => null);
     const base = {
@@ -267,15 +269,18 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
         showGender: !!owner.showGender,
         showBirthday: !!owner.showBirthday
       },
-      stats: { album: album.length, reels: mine.filter(p => p.kind === 'reel').length, friends: owner.friends.length },
+      stats: { album: album.length, reels: mine.filter(p => p.kind === 'reel').length, friends: owner.friends.length, status: live.length },
       caps: { image: LIMITS.caps.albumImage, video: LIMITS.caps.albumVideo }
     };
-    if (req.query.lite || !r2Enabled) return res.json({ ...base, items: [] });
+    if (req.query.lite || !r2Enabled) return res.json({ ...base, items: [], statuses: [] });
     try {
       const items = await Promise.all(
         album.map(async p => ({ id: p.id, mime: p.mime, size: p.size, caption: p.caption, createdAt: p.createdAt, url: await signGet(p.key, { expiresIn: LINK_SECONDS }) }))
       );
-      res.json({ ...base, items });
+      const statuses = await Promise.all(
+        live.map(async p => ({ id: p.id, mime: p.mime, size: p.size, caption: p.caption, createdAt: p.createdAt, url: await signGet(p.key, { expiresIn: LINK_SECONDS }) }))
+      );
+      res.json({ ...base, items, statuses });
     } catch (e) {
       console.error('profile failed', e);
       res.status(500).json({ error: `Could not load the profile (${reason(e)})` });
