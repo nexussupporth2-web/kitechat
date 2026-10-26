@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Camera, Check, Image as ImageIcon, Pencil, Smile, Trash2, X } from 'lucide-react';
 import { api, uploadToStorage } from './api.ts';
+import BusinessInfo, { BIZ_CATEGORIES, DAYS, SOCIALS, defaultHours, type Business } from './BusinessInfo.tsx';
 
 interface Me {
   userId: string;
@@ -31,13 +32,15 @@ const inputCls = 'w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py
 /** Profile Settings: picture, name, @username and a few optional details. The pencil switches to edit mode. */
 export default function ProfileSettings({ userId, onChanged }: Props) {
   const [me, setMe] = useState<Me | null>(null);
+  const [biz, setBiz] = useState<Business | null>(null);
   const [error, setError] = useState('');
   const [editing, setEditing] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const r = await api<{ user: Me }>(`/api/profile/${encodeURIComponent(userId)}?lite=1`);
+      const r = await api<{ user: Me; business: Business }>(`/api/profile/${encodeURIComponent(userId)}?lite=1`);
       setMe(r.user);
+      setBiz(r.business);
       setError('');
       return r.user;
     } catch (e) {
@@ -55,7 +58,7 @@ export default function ProfileSettings({ userId, onChanged }: Props) {
     if (u) onChanged({ userId: u.userId, name: u.name, avatar: u.avatar, photoUrl: u.photoUrl });
   };
 
-  if (!me) {
+  if (!me || !biz) {
     return <div className="flex-1 flex items-center justify-center text-sm text-slate-400 p-8 text-center">{error || 'Loading…'}</div>;
   }
 
@@ -63,6 +66,7 @@ export default function ProfileSettings({ userId, onChanged }: Props) {
     return (
       <Editor
         me={me}
+        biz={biz}
         onClose={() => setEditing(false)}
         onSaved={async () => {
           await changed();
@@ -86,8 +90,14 @@ export default function ProfileSettings({ userId, onChanged }: Props) {
           <h2 className="mt-5 text-xl font-semibold text-white text-center break-words max-w-full">{me.name}</h2>
           <p className="text-sm text-slate-400">@{me.handle ?? me.userId.toLowerCase()}</p>
           {me.category && <span className="mt-3 px-3 py-1 rounded-full bg-slate-800 text-xs text-slate-300">{me.category}</span>}
+          {(!biz.phone || !biz.businessName || !biz.bizCategory) && (
+            <button onClick={() => setEditing(true)} className="mt-4 w-full max-w-sm rounded-2xl bg-amber-400/15 border border-amber-400/40 px-4 py-3 text-sm text-amber-300 text-left">
+              Complete your business details (phone number, business name and category are required). Tap to fill them in.
+            </button>
+          )}
           {error && <p role="alert" className="mt-3 text-xs text-rose-400">{error}</p>}
         </div>
+        <BusinessInfo b={{ ...biz, phone: biz.phone }} />
       </div>
     </div>
   );
@@ -110,7 +120,7 @@ function Ring({ me, size = 'w-36 h-36', text = 'text-5xl' }: { me: Pick<Me, 'pho
 
 // ---------------------------------------------------------------------------------------------
 
-function Editor({ me, onClose, onSaved, onPhotoChanged }: { me: Me; onClose: () => void; onSaved: () => Promise<void>; onPhotoChanged: () => Promise<void> }) {
+function Editor({ me, biz, onClose, onSaved, onPhotoChanged }: { me: Me; biz: Business; onClose: () => void; onSaved: () => Promise<void>; onPhotoChanged: () => Promise<void> }) {
   const [name, setName] = useState(me.name);
   const [handle, setHandle] = useState(me.handle ?? '');
   const [check, setCheck] = useState<{ state: 'idle' | 'checking' | 'ok' | 'bad'; reason?: string }>({ state: 'idle' });
@@ -119,6 +129,21 @@ function Editor({ me, onClose, onSaved, onPhotoChanged }: { me: Me; onClose: () 
   const [showGender, setShowGender] = useState(me.showGender);
   const [birthday, setBirthday] = useState(me.birthday);
   const [showBirthday, setShowBirthday] = useState(me.showBirthday);
+  const [phone, setPhone] = useState(biz.phone);
+  const [showPhone, setShowPhone] = useState(biz.showPhone);
+  const [businessName, setBusinessName] = useState(biz.businessName);
+  const [bizCategory, setBizCategory] = useState(biz.bizCategory);
+  const [description, setDescription] = useState(biz.description);
+  const [address, setAddress] = useState(biz.address);
+  const [mapLink, setMapLink] = useState(biz.mapLink);
+  const [hours, setHours] = useState(biz.hours ?? defaultHours());
+  const [hoursOn, setHoursOn] = useState(biz.hours !== null);
+  const [email, setEmail] = useState(biz.email);
+  const [website, setWebsite] = useState(biz.website);
+  const [about, setAbout] = useState(biz.about);
+  const [socials, setSocials] = useState<Record<string, string>>(biz.socials);
+  const [addingProduct, setAddingProduct] = useState(false);
+  const coverRef = useRef<HTMLInputElement>(null);
   const [sheet, setSheet] = useState(false);
   const [picking, setPicking] = useState<'avatars' | null>(null);
   const [cropFile, setCropFile] = useState<File | null>(null);
@@ -185,6 +210,56 @@ function Editor({ me, onClose, onSaved, onPhotoChanged }: { me: Me; onClose: () 
     setCropFile(f);
   };
 
+  const uploadCover = async (file: File) => {
+    setBusy(true);
+    setError('');
+    try {
+      const blob = await fileToJpeg(file, 1280, 750 * 1024);
+      const s = await api<{ key: string; uploadUrl: string }>('/api/media/sign', { kind: 'cover', mime: 'image/jpeg', size: blob.size });
+      await uploadToStorage(s.uploadUrl, blob, 'image/jpeg');
+      await api('/api/profile/cover', { key: s.key });
+      await onPhotoChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save the cover photo');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeCover = async () => {
+    setBusy(true);
+    try {
+      await api('/api/profile/cover', undefined, 'DELETE');
+      await onPhotoChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not remove the cover photo');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeProduct = async (id: string) => {
+    if (!window.confirm('Remove this product?')) return;
+    setBusy(true);
+    try {
+      await api(`/api/products/${id}`, undefined, 'DELETE');
+      await onPhotoChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not remove the product');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const useMyLocation = () => {
+    if (!navigator.geolocation) return setError('Location is not available on this device');
+    navigator.geolocation.getCurrentPosition(
+      p => setMapLink(`https://www.google.com/maps?q=${p.coords.latitude.toFixed(6)},${p.coords.longitude.toFixed(6)}`),
+      () => setError('Could not get your location. Allow location access or paste a Google Maps link.'),
+      { enableHighAccuracy: true, timeout: 15000 }
+    );
+  };
+
   const save = async () => {
     setBusy(true);
     setError('');
@@ -193,6 +268,18 @@ function Editor({ me, onClose, onSaved, onPhotoChanged }: { me: Me; onClose: () 
         name: name.trim(),
         handle: handle.trim().toLowerCase(),
         category,
+        phone,
+        showPhone,
+        businessName,
+        bizCategory,
+        bizDescription: description,
+        bizAddress: address,
+        mapLink,
+        bizHours: hoursOn ? hours : null,
+        email,
+        website,
+        about,
+        socials,
         gender,
         birthday,
         showGender,
@@ -205,7 +292,8 @@ function Editor({ me, onClose, onSaved, onPhotoChanged }: { me: Me; onClose: () 
     }
   };
 
-  const canSave = !busy && name.trim().length > 0 && check.state !== 'bad' && check.state !== 'checking';
+  const missing = !phone.trim() || !businessName.trim() || !bizCategory;
+  const canSave = !busy && !missing && name.trim().length > 0 && check.state !== 'bad' && check.state !== 'checking';
 
   return (
     <div className="flex-1 overflow-y-auto bg-slate-950">
@@ -295,9 +383,131 @@ function Editor({ me, onClose, onSaved, onPhotoChanged }: { me: Me; onClose: () 
             <Toggle label="Visible on profile" on={showBirthday} onChange={setShowBirthday} hint={showBirthday ? 'Friends can see this' : 'Only me'} />
           </div>
 
+          {/* Business: required */}
+          <h3 className="pt-4 text-xs font-semibold uppercase tracking-wider text-slate-400">Business details (required)</h3>
+          <label className="block">
+            <span className="text-xs text-slate-400 mb-1.5 block">Phone number *</span>
+            <input value={phone} onChange={e => setPhone(e.target.value.replace(/[^0-9+\s-]/g, '').slice(0, 20))} inputMode="tel" className={inputCls} placeholder="+91 98765 43210" />
+            <Toggle label="Show on my profile" on={showPhone} onChange={setShowPhone} hint={showPhone ? 'Friends can see and call this number' : 'Only me'} />
+          </label>
+          <label className="block">
+            <span className="flex justify-between text-xs text-slate-400 mb-1.5"><span>Business name *</span><span>{businessName.length}/60</span></span>
+            <input value={businessName} onChange={e => setBusinessName(e.target.value.slice(0, 60))} className={inputCls} placeholder="Your shop or business name" />
+          </label>
+          <label className="block">
+            <span className="text-xs text-slate-400 mb-1.5 block">Business category *</span>
+            <select value={bizCategory} onChange={e => setBizCategory(e.target.value)} className={inputCls}>
+              <option value="">Choose a category</option>
+              {BIZ_CATEGORIES.map(c => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          </label>
+          {missing && <p className="text-[11px] text-amber-300">Fill in the phone number, business name and category to save.</p>}
+
+          {/* Business profile */}
+          <h3 className="pt-4 text-xs font-semibold uppercase tracking-wider text-slate-400">Business profile</h3>
+          <div>
+            <span className="text-xs text-slate-400 mb-1.5 block">Cover photo</span>
+            {biz.coverUrl ? <img src={biz.coverUrl} alt="" className="w-full h-32 object-cover rounded-2xl" /> : <div className="w-full h-24 rounded-2xl bg-slate-800 flex items-center justify-center text-xs text-slate-500">No cover photo</div>}
+            <div className="mt-2 flex gap-4 text-sm">
+              <button type="button" onClick={() => coverRef.current?.click()} disabled={busy} className="text-cyan-400 font-medium">{biz.coverUrl ? 'Change cover' : 'Add cover'}</button>
+              {biz.coverUrl && <button type="button" onClick={removeCover} disabled={busy} className="text-rose-400">Remove</button>}
+            </div>
+            <input ref={coverRef} type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void uploadCover(f); }} />
+            <p className="mt-1 text-[11px] text-slate-500">Your logo is the profile photo above.</p>
+          </div>
+          <label className="block">
+            <span className="flex justify-between text-xs text-slate-400 mb-1.5"><span>Business description</span><span>{description.length}/500</span></span>
+            <textarea value={description} onChange={e => setDescription(e.target.value.slice(0, 500))} rows={4} className={`${inputCls} resize-none`} placeholder="What do you sell or offer?" />
+          </label>
+          <label className="block">
+            <span className="text-xs text-slate-400 mb-1.5 block">Business address</span>
+            <textarea value={address} onChange={e => setAddress(e.target.value.slice(0, 200))} rows={2} className={`${inputCls} resize-none`} placeholder="Shop no., street, city, PIN" />
+          </label>
+          <div>
+            <span className="text-xs text-slate-400 mb-1.5 block">Google location</span>
+            <input value={mapLink} onChange={e => setMapLink(e.target.value.slice(0, 300))} className={inputCls} placeholder="Paste a Google Maps link" autoCapitalize="none" />
+            <button type="button" onClick={useMyLocation} className="mt-2 text-sm text-cyan-400 font-medium">Use my current location</button>
+          </div>
+          <div>
+            <span className="text-xs text-slate-400 mb-1.5 block">Business hours</span>
+            <Toggle label="Show business hours" on={hoursOn} onChange={setHoursOn} hint={hoursOn ? 'Friends can see your hours' : 'Hidden. Nothing is shown'} />
+            {hoursOn && <div className="mt-2 rounded-2xl bg-slate-900 border border-slate-800 divide-y divide-slate-800">
+              {hours.map((h, i) => (
+                <div key={i} className="flex items-center gap-2 px-3 py-2 text-sm">
+                  <span className="w-12 text-slate-300">{DAYS[i].slice(0, 3)}</span>
+                  <label className="flex items-center gap-1 text-xs text-slate-400">
+                    <input type="checkbox" checked={h.closed} onChange={e => setHours(hours.map((x, j) => (j === i ? { ...x, closed: e.target.checked } : x)))} /> Closed
+                  </label>
+                  {!h.closed && (
+                    <span className="ml-auto flex items-center gap-1">
+                      <input type="time" value={h.open} onChange={e => setHours(hours.map((x, j) => (j === i ? { ...x, open: e.target.value } : x)))} className="bg-slate-950 border border-slate-800 rounded-lg px-1.5 py-1 text-xs text-white" />
+                      <span className="text-slate-500">–</span>
+                      <input type="time" value={h.close} onChange={e => setHours(hours.map((x, j) => (j === i ? { ...x, close: e.target.value } : x)))} className="bg-slate-950 border border-slate-800 rounded-lg px-1.5 py-1 text-xs text-white" />
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>}
+          </div>
+          <label className="block">
+            <span className="text-xs text-slate-400 mb-1.5 block">Email</span>
+            <input type="email" value={email} onChange={e => setEmail(e.target.value.slice(0, 120))} className={inputCls} placeholder="shop@example.com" autoCapitalize="none" />
+          </label>
+          <label className="block">
+            <span className="text-xs text-slate-400 mb-1.5 block">Website</span>
+            <input value={website} onChange={e => setWebsite(e.target.value.slice(0, 300))} className={inputCls} placeholder="www.example.com" autoCapitalize="none" />
+          </label>
+          <label className="block">
+            <span className="flex justify-between text-xs text-slate-400 mb-1.5"><span>About / Status</span><span>{about.length}/140</span></span>
+            <input value={about} onChange={e => setAbout(e.target.value.slice(0, 140))} className={inputCls} placeholder="Open for orders today" />
+          </label>
+
+          {/* Shop setup */}
+          <h3 className="pt-4 text-xs font-semibold uppercase tracking-wider text-slate-400">Shop setup</h3>
+          <div>
+            <span className="text-xs text-slate-400 mb-1.5 block">Social account links</span>
+            <div className="space-y-2">
+              {SOCIALS.map(([k, label]) => (
+                <input key={k} value={socials[k] ?? ''} onChange={e => setSocials({ ...socials, [k]: e.target.value.slice(0, 300) })} className={inputCls} placeholder={`${label} link`} autoCapitalize="none" />
+              ))}
+            </div>
+          </div>
+          <div>
+            <span className="text-xs text-slate-400 mb-1.5 block">Product catalogue ({biz.products.length}/20)</span>
+            <div className="space-y-2">
+              {biz.products.map(p => (
+                <div key={p.id} className="flex items-center gap-3 rounded-2xl bg-slate-900 border border-slate-800 p-2">
+                  {p.photoUrl ? <img src={p.photoUrl} alt="" className="w-14 h-14 rounded-xl object-cover" /> : <div className="w-14 h-14 rounded-xl bg-slate-800" />}
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm text-white truncate">{p.name}</div>
+                    <div className="text-xs text-cyan-400">{p.price}</div>
+                  </div>
+                  <button type="button" onClick={() => removeProduct(p.id)} disabled={busy} className="w-9 h-9 rounded-full hover:bg-slate-800 text-rose-400 flex items-center justify-center" aria-label="Remove product">
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+            </div>
+            {biz.products.length < 20 && (
+              <button type="button" onClick={() => setAddingProduct(true)} className="mt-2 text-sm text-cyan-400 font-medium">+ Add product</button>
+            )}
+          </div>
+
           {error && <p role="alert" className="text-xs text-rose-400">{error}</p>}
         </div>
       </div>
+
+      {addingProduct && (
+        <ProductForm
+          onCancel={() => setAddingProduct(false)}
+          onSaved={async () => {
+            setAddingProduct(false);
+            await onPhotoChanged();
+          }}
+        />
+      )}
 
       <input ref={galleryRef} type="file" accept="image/*" className="hidden" onChange={pickFile} />
       <input ref={cameraRef} type="file" accept="image/*" capture="user" className="hidden" onChange={pickFile} />
@@ -371,6 +581,82 @@ function Toggle({ label, on, onChange, hint }: { label: string; on: boolean; onC
       </span>
     </button>
   );
+}
+
+function ProductForm({ onCancel, onSaved }: { onCancel: () => void; onSaved: () => Promise<void> }) {
+  const [name, setName] = useState('');
+  const [price, setPrice] = useState('');
+  const [desc, setDesc] = useState('');
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const ref = useRef<HTMLInputElement>(null);
+
+  const add = async () => {
+    setBusy(true);
+    setErr('');
+    try {
+      let key: string | undefined;
+      if (file) {
+        const blob = await fileToJpeg(file, 900, 450 * 1024);
+        const s = await api<{ key: string; uploadUrl: string }>('/api/media/sign', { kind: 'product', mime: 'image/jpeg', size: blob.size });
+        await uploadToStorage(s.uploadUrl, blob, 'image/jpeg');
+        key = s.key;
+      }
+      await api('/api/products', { name: name.trim(), price: price.trim(), description: desc.trim(), key });
+      await onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not add the product');
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center" onClick={() => !busy && onCancel()}>
+      <div className="w-full max-w-sm max-h-[90dvh] overflow-y-auto bg-slate-900 border border-slate-800 rounded-t-3xl sm:rounded-3xl p-5 space-y-3" onClick={e => e.stopPropagation()}>
+        <h3 className="text-base font-bold text-white">Add product</h3>
+        <input value={name} onChange={e => setName(e.target.value.slice(0, 60))} className={inputCls} placeholder="Product name *" />
+        <input value={price} onChange={e => setPrice(e.target.value.slice(0, 30))} className={inputCls} placeholder="Price, e.g. ₹499" />
+        <textarea value={desc} onChange={e => setDesc(e.target.value.slice(0, 300))} rows={3} className={`${inputCls} resize-none`} placeholder="Short description" />
+        <input ref={ref} type="file" accept="image/*" className="hidden" onChange={e => { setFile(e.target.files?.[0] ?? null); e.target.value = ''; }} />
+        <button type="button" onClick={() => ref.current?.click()} className="w-full py-3 rounded-xl bg-slate-800 text-sm text-slate-200">{file ? `Photo: ${file.name}` : 'Add product photo'}</button>
+        {err && <p role="alert" className="text-xs text-rose-400">{err}</p>}
+        <div className="flex gap-3">
+          <button onClick={onCancel} disabled={busy} className="flex-1 py-3 rounded-xl bg-slate-800 text-white text-sm">Cancel</button>
+          <button onClick={add} disabled={busy || !name.trim()} className="flex-1 py-3 rounded-xl bg-cyan-500 text-accent-ink text-sm font-semibold disabled:opacity-50">{busy ? 'Saving…' : 'Add'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Shrinks any photo to a JPEG of at most maxW pixels wide and roughly maxBytes. */
+async function fileToJpeg(file: File, maxW: number, maxBytes: number): Promise<Blob> {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((ok, no) => {
+      const i = new Image();
+      i.onload = () => ok(i);
+      i.onerror = () => no(new Error('This image format is not supported. Try a JPG, PNG or WebP photo.'));
+      i.src = url;
+    });
+    const s = Math.min(1, maxW / img.naturalWidth);
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.naturalWidth * s);
+    c.height = Math.round(img.naturalHeight * s);
+    c.getContext('2d')!.drawImage(img, 0, 0, c.width, c.height);
+    let best: Blob | null = null;
+    for (const q of [0.85, 0.75, 0.65, 0.55, 0.45, 0.35]) {
+      const b = await new Promise<Blob | null>(r => c.toBlob(r, 'image/jpeg', q));
+      if (!b) continue;
+      best = b;
+      if (b.size <= maxBytes) break;
+    }
+    if (!best) throw new Error('Could not prepare the photo');
+    return best;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 // ---------------------------------------------------------------------------------------------

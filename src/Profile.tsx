@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ArrowLeft, MessageSquare, Play, Plus, Trash2, X } from 'lucide-react';
 import { api } from './api.ts';
+import BusinessInfo, { type Business } from './BusinessInfo.tsx';
 import { deletePost, phaseLabel, publishPost, type MediaConfig, type Phase } from './media.ts';
 
 interface Item {
@@ -13,6 +14,7 @@ interface Item {
 }
 
 interface ProfileData {
+  business: Business;
   user: {
     userId: string;
     name: string;
@@ -247,6 +249,7 @@ export default function Profile({ userId, isMe, onBack, onMessage, children }: P
             ))}
           </div>
         )}
+        {!isMe && <BusinessInfo b={data.business} />}
         {children}
       </div>
 
