@@ -24,9 +24,10 @@ interface ProfileData {
     gender: string;
     birthday: string;
   };
-  stats: { album: number; reels: number; friends: number };
+  stats: { album: number; reels: number; friends: number; status: number };
   caps: { image: number; video: number };
   items: Item[];
+  statuses: Item[];
 }
 
 interface Props {
@@ -50,6 +51,9 @@ export default function Profile({ userId, isMe, onBack, onMessage, children }: P
   const [error, setError] = useState('');
   const [progress, setProgress] = useState<{ phase: Phase; p: number } | null>(null);
   const [open, setOpen] = useState<Item | null>(null);
+  const [chooser, setChooser] = useState(false);
+  const [statusAt, setStatusAt] = useState<number | null>(null);
+  const target = useRef<'album' | 'story'>('album');
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -75,8 +79,9 @@ export default function Profile({ userId, isMe, onBack, onMessage, children }: P
     setError('');
     setProgress({ phase: 'compressing', p: 0 });
     try {
-      await publishPost('album', file, '', cfg, (phase, p) => setProgress({ phase, p }));
-      setTab(file.type.startsWith('video/') ? 'videos' : 'images');
+      const kind = target.current;
+      await publishPost(kind, file, '', cfg, (phase, p) => setProgress({ phase, p }));
+      if (kind === 'album') setTab(file.type.startsWith('video/') ? 'videos' : 'images');
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Upload failed');
@@ -85,8 +90,25 @@ export default function Profile({ userId, isMe, onBack, onMessage, children }: P
     }
   };
 
+  const pick = (kind: 'album' | 'story') => {
+    target.current = kind;
+    setChooser(false);
+    fileRef.current?.click();
+  };
+
+  const removeStatus = async (item: Item) => {
+    if (!window.confirm('Delete this status?')) return;
+    try {
+      await deletePost(item.id);
+      setStatusAt(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not delete');
+    }
+  };
+
   const remove = async (item: Item) => {
-    if (!window.confirm('Delete this from your album?')) return;
+    if (!window.confirm('Delete this from your feed?')) return;
     try {
       await deletePost(item.id);
       setOpen(null);
@@ -104,6 +126,8 @@ export default function Profile({ userId, isMe, onBack, onMessage, children }: P
     );
   }
 
+  const statuses = data.statuses ?? [];
+  const hasStatus = statuses.length > 0;
   const items = data.items.filter(i => (tab === 'all' ? true : tab === 'videos' ? isVideo(i) : !isVideo(i)));
   const stats: [number, string][] = [
     [data.stats.album, 'Album'],
@@ -123,7 +147,12 @@ export default function Profile({ userId, isMe, onBack, onMessage, children }: P
 
         <div className="flex flex-col items-center pt-4 px-4">
           <div className="relative">
-            <div className="w-36 h-36 rounded-full p-1.5 bg-gradient-to-tr from-amber-400 via-rose-400 to-indigo-400 shadow-lg shadow-rose-400/30">
+            <div
+              onClick={hasStatus ? () => setStatusAt(0) : undefined}
+              role={hasStatus ? 'button' : undefined}
+              aria-label={hasStatus ? 'View status' : undefined}
+              className={`w-36 h-36 rounded-full p-1.5 ${hasStatus ? 'status-ring cursor-pointer bg-gradient-to-tr from-amber-400 via-rose-400 to-indigo-400' : 'bg-slate-800'}`}
+            >
               <div className="w-full h-full rounded-full bg-slate-950 p-1.5">
                 {data.user.photoUrl ? (
                   <img src={data.user.photoUrl} alt="" className="w-full h-full rounded-full object-cover" />
@@ -151,9 +180,9 @@ export default function Profile({ userId, isMe, onBack, onMessage, children }: P
         <div className="px-4 mt-6">
           {isMe ? (
             <>
-              <input ref={fileRef} type="file" accept="image/*,video/*" className="hidden" onChange={addFile} />
+              <input ref={fileRef} type="file" accept="image/*,video/*,audio/*" className="hidden" onChange={addFile} />
               <button
-                onClick={() => fileRef.current?.click()}
+                onClick={() => setChooser(true)}
                 disabled={progress !== null || !cfg?.enabled}
                 className="w-full py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 disabled:opacity-60 text-white text-sm font-semibold flex items-center justify-center gap-2"
               >
@@ -174,7 +203,7 @@ export default function Profile({ userId, isMe, onBack, onMessage, children }: P
             </div>
           )}
           {error && <p role="alert" className="mt-3 text-xs text-rose-400">{error}</p>}
-          {isMe && <p className="mt-2 text-[11px] text-slate-500 text-center">Up to {data.caps.image} photos and {data.caps.video} videos (30 s). Adding more replaces the oldest.</p>}
+          {isMe && <p className="mt-2 text-[11px] text-slate-500 text-center">Feed: up to {data.caps.image} photos and {data.caps.video} videos (30 s). Status: up to 2, disappears after 24 hours. Adding more replaces the oldest.</p>}
         </div>
 
         <div className="mx-4 mt-5 rounded-[2rem] bg-slate-800/70 flex items-center py-5">
@@ -220,6 +249,50 @@ export default function Profile({ userId, isMe, onBack, onMessage, children }: P
         )}
         {children}
       </div>
+
+      {chooser && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center" onClick={() => setChooser(false)}>
+          <div onClick={e => e.stopPropagation()} className="w-full max-w-sm bg-slate-900 rounded-t-3xl sm:rounded-3xl p-5 space-y-3">
+            <h3 className="text-base font-semibold text-white text-center">Where should it go?</h3>
+            <button onClick={() => pick('album')} className="w-full py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white text-sm font-semibold">
+              To Feed
+              <span className="block text-[11px] font-normal text-slate-400">Stays on your profile</span>
+            </button>
+            <button onClick={() => pick('story')} className="w-full py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white text-sm font-semibold">
+              To Status
+              <span className="block text-[11px] font-normal text-slate-400">Glowing ring on your photo, gone after 24 hours</span>
+            </button>
+            <button onClick={() => setChooser(false)} className="w-full py-2 text-sm text-slate-400">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {statusAt !== null && statuses[statusAt] && (
+        <div className="fixed inset-0 z-50 bg-black flex items-center justify-center" onClick={() => (statusAt + 1 < statuses.length ? setStatusAt(statusAt + 1) : setStatusAt(null))}>
+          <div className="absolute top-3 left-3 right-16 flex gap-1">
+            {statuses.map((s, i) => (
+              <div key={s.id} className={`h-1 flex-1 rounded-full ${i <= statusAt ? 'bg-white' : 'bg-white/30'}`} />
+            ))}
+          </div>
+          <button onClick={e => { e.stopPropagation(); setStatusAt(null); }} className="absolute top-6 right-4 w-10 h-10 rounded-full bg-black/50 text-fixed-white flex items-center justify-center" aria-label="Close">
+            <X className="w-5 h-5" />
+          </button>
+          {isMe && (
+            <button onClick={e => { e.stopPropagation(); void removeStatus(statuses[statusAt]); }} className="absolute top-6 left-4 w-10 h-10 rounded-full bg-black/50 text-fixed-white flex items-center justify-center" aria-label="Delete status">
+              <Trash2 className="w-5 h-5" />
+            </button>
+          )}
+          <div onClick={e => e.stopPropagation()} className="max-w-full max-h-full">
+            {statuses[statusAt].mime.startsWith('video/') ? (
+              <video key={statuses[statusAt].id} src={statuses[statusAt].url} controls autoPlay playsInline className="max-w-full max-h-[100dvh]" />
+            ) : statuses[statusAt].mime.startsWith('audio/') ? (
+              <audio key={statuses[statusAt].id} src={statuses[statusAt].url} controls autoPlay />
+            ) : (
+              <img src={statuses[statusAt].url} alt="" onClick={() => (statusAt + 1 < statuses.length ? setStatusAt(statusAt + 1) : setStatusAt(null))} className="max-w-full max-h-[100dvh] object-contain" />
+            )}
+          </div>
+        </div>
+      )}
 
       {open && (
         <div className="fixed inset-0 z-50 bg-black flex items-center justify-center" onClick={() => setOpen(null)}>
