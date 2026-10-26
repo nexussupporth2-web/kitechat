@@ -6,6 +6,8 @@ import path from 'path';
 import crypto from 'crypto';
 import { data, messageIndex, addMessage, messagesFor, save, flush, initStore, type Message, type User } from './server/store.ts';
 import { mediaRouter } from './server/media.ts';
+import { networkRouter } from './server/network.ts';
+import { blockedMessage } from './server/moderation.ts';
 import { r2Enabled, signGet } from './server/r2.ts';
 import { canPush, pushEnabled, sendPush, vapidPublicKey } from './server/push.ts';
 import { hashPassword, verifyPassword, signToken, verifyToken } from './server/auth.ts';
@@ -83,6 +85,7 @@ function requireAuth(req: Request, res: Response, next: NextFunction) {
   const uid = verifyToken(h?.startsWith('Bearer ') ? h.slice(7) : '');
   const user = uid ? data.users[uid] : undefined;
   if (!user) return res.status(401).json({ error: 'Unauthorized' });
+  if (user.blocked) return res.status(403).json({ error: blockedMessage, blocked: true });
   res.locals.user = user;
   next();
 }
@@ -136,7 +139,22 @@ app.post('/api/login', rateLimit(10, 60_000), async (req, res) => {
   if (!user || !verifyPassword(password, user.passwordHash)) {
     return res.status(401).json({ error: 'Invalid User ID or password' });
   }
+  if (user.blocked) return res.status(403).json({ error: blockedMessage, blocked: true });
   res.json({ token: signToken(user.userId), user: { ...publicUser(user), photoUrl: await photoUrlOf(user) } });
+});
+
+/** A blocked person can ask the admin to look again. Needs their ID and password. */
+app.post('/api/appeal', rateLimit(5, 60_000), (req, res) => {
+  const { userId, password, message } = req.body ?? {};
+  const user = typeof userId === 'string' ? data.users[userId.trim().toUpperCase()] : undefined;
+  if (!user || typeof password !== 'string' || !verifyPassword(password, user.passwordHash) || !user.blocked) {
+    return res.status(400).json({ error: 'Could not send the appeal. Check your User ID and password.' });
+  }
+  const text = typeof message === 'string' ? message.trim().slice(0, 500) : '';
+  if (!text) return res.status(400).json({ error: 'Write a short message first' });
+  user.appeal = { at: Date.now(), message: text };
+  save();
+  res.json({ ok: true });
 });
 
 app.get('/api/me', requireAuth, async (_req, res) => {
@@ -251,7 +269,7 @@ app.get('/api/ice', requireAuth, (_req, res) => {
 
 io.use((socket, next) => {
   const uid = verifyToken(socket.handshake.auth?.token);
-  if (!uid || !data.users[uid]) return next(new Error('unauthorized'));
+  if (!uid || !data.users[uid] || data.users[uid].blocked) return next(new Error('unauthorized'));
   socket.data.userId = uid;
   next();
 });
@@ -498,6 +516,7 @@ io.on('connection', socket => {
 async function start() {
   await initStore();
   syncAdminFriends(); // everyone who joined before gets the admin as a friend too
+  app.use('/api', networkRouter({ requireAuth, areFriends, isAdmin: (u: User) => u.userId === ADMIN_ID }));
   app.use('/api', mediaRouter({
       io,
       requireAuth,
