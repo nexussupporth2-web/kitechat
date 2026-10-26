@@ -3,6 +3,20 @@ import path from 'path';
 import crypto from 'crypto';
 import { r2Enabled, getText, putText } from './r2.ts';
 
+export interface Product {
+  id: string;
+  name: string;
+  price: string;
+  description: string;
+  photo?: { key: string };
+}
+
+export interface BizHours {
+  open: string;
+  close: string;
+  closed: boolean;
+}
+
 export interface User {
   userId: string;
   name: string;
@@ -22,6 +36,30 @@ export interface User {
   birthday?: string;
   showGender?: boolean;
   showBirthday?: boolean;
+  /** Business details. Phone, business name and business category are required. */
+  phone?: string;
+  showPhone?: boolean;
+  businessName?: string;
+  bizCategory?: string;
+  bizDescription?: string;
+  bizAddress?: string;
+  /** A Google Maps link. */
+  mapLink?: string;
+  /** Monday to Sunday. */
+  bizHours?: BizHours[];
+  email?: string;
+  website?: string;
+  /** Short status line, like "Open for orders". */
+  about?: string;
+  socials?: Record<string, string>;
+  cover?: { key: string; at: number };
+  products?: Product[];
+  /** Adult-content strikes. Two strikes = blocked. */
+  strikes?: { at: number; where: string }[];
+  blocked?: boolean;
+  appeal?: { at: number; message: string };
+  /** People whose Network posts this user chose not to see. */
+  hidden?: string[];
   /** Devices that allowed notifications (so a closed app can still be told about a message or call). */
   pushSubs?: { endpoint: string; keys: { p256dh: string; auth: string } }[];
 }
@@ -52,7 +90,7 @@ export interface Message {
 export interface Post {
   id: string;
   ownerId: string;
-  kind: 'story' | 'reel' | 'album';
+  kind: 'story' | 'reel' | 'album' | 'network';
   key: string;
   mime: string;
   size: number;
@@ -60,6 +98,27 @@ export interface Post {
   createdAt: number;
   /** Stories expire; reels stay until deleted (null). */
   expiresAt: number | null;
+  /** Kite Network posts only. */
+  visibility?: 'public' | 'friends';
+  /** userId -> emoji */
+  likes?: Record<string, string>;
+  comments?: NetComment[];
+}
+
+export interface NetComment {
+  id: string;
+  userId: string;
+  text: string;
+  at: number;
+}
+
+export interface Report {
+  id: string;
+  postId: string;
+  commentId?: string;
+  reporterId: string;
+  reason: string;
+  at: number;
 }
 
 export interface Share {
@@ -80,6 +139,7 @@ interface Data {
   messages: Message[];
   posts: Post[];
   shares: Share[];
+  reports: Report[];
 }
 
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
@@ -91,7 +151,8 @@ export const data: Data = {
   users: {},
   messages: [],
   posts: [],
-  shares: []
+  shares: [],
+  reports: []
 };
 export const messageIndex = new Map<string, Message>();
 
@@ -113,6 +174,7 @@ export async function initStore(): Promise<void> {
     data.messages = saved.messages || [];
     data.posts = saved.posts || [];
     data.shares = saved.shares || [];
+    data.reports = saved.reports || [];
   }
   messageIndex.clear();
   for (const m of data.messages) messageIndex.set(m.id, m);

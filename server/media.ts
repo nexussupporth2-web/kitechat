@@ -1,7 +1,8 @@
 import { Router, type NextFunction, type Request, type RequestHandler, type Response } from 'express';
 import type { Server } from 'socket.io';
 import crypto from 'crypto';
-import { data, messageIndex, addMessage, save, type Message, type Post, type Share, type User } from './store.ts';
+import { data, messageIndex, addMessage, save, type Message, type Post, type Product, type Share, type User } from './store.ts';
+import { checkUpload } from './moderation.ts';
 import { r2Enabled, signPut, signGet, head, remove } from './r2.ts';
 
 const MB = 1024 * 1024;
@@ -20,6 +21,8 @@ export const LIMITS = {
   share: { bytes: 50 * MB, mediaOriginalBytes: 300 * MB, pendingPerSender: 5, ttlMs: 24 * HOUR },
   wallpaperBytes: 1 * MB,
   avatarBytes: 500 * 1024,
+  coverBytes: 800 * 1024,
+  maxProducts: 20,
   /** How many of each a user can keep. Adding one more removes the oldest. */
   caps: { story: 2, reel: 10, albumImage: 10, albumVideo: 10 },
   quotaBytes: 200 * MB
@@ -121,6 +124,18 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
       if (!ext) return res.status(400).json({ error: 'Profile picture must be a JPG, PNG or WebP photo' });
       if (size > LIMITS.avatarBytes) return res.status(400).json({ error: 'Profile picture is too large even after compression' });
       key = `avatars/${me.userId}/${crypto.randomUUID()}.${ext}`;
+    } else if (kind === 'network') {
+      const ext = IMAGE_TYPES[mime] ?? VIDEO_TYPES[mime];
+      if (!ext) return res.status(400).json({ error: 'Network posts can be a photo or a video' });
+      const max = mime in IMAGE_TYPES ? LIMITS.story.imageBytes : LIMITS.reel.videoBytes;
+      if (size > max) return res.status(400).json({ error: `Too large even after compression (limit ${max / MB} MB)` });
+      key = `network/${me.userId}/${crypto.randomUUID()}.${ext}`;
+    } else if (kind === 'cover' || kind === 'product') {
+      const ext = IMAGE_TYPES[mime];
+      const max = kind === 'cover' ? LIMITS.coverBytes : LIMITS.avatarBytes;
+      if (!ext) return res.status(400).json({ error: 'Please use a JPG, PNG or WebP photo' });
+      if (size > max) return res.status(400).json({ error: 'Photo is too large even after compression' });
+      key = `${kind === 'cover' ? 'covers' : 'products'}/${me.userId}/${crypto.randomUUID()}.${ext}`;
     } else if (kind === 'wallpaper') {
       const ext = IMAGE_TYPES[mime];
       if (!ext) return res.status(400).json({ error: 'Wallpaper must be a JPG, PNG or WebP photo' });
@@ -139,7 +154,7 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
       return res.status(400).json({ error: 'Invalid upload type' });
     }
 
-    if ((kind === 'story' || kind === 'reel' || kind === 'album') && usedBytes(me.userId) + size > LIMITS.quotaBytes) {
+    if ((kind === 'story' || kind === 'reel' || kind === 'album' || kind === 'network') && usedBytes(me.userId) + size > LIMITS.quotaBytes) {
       return res.status(413).json({ error: `Storage full. You can keep up to ${LIMITS.quotaBytes / MB} MB. Delete something first.` });
     }
 
@@ -176,6 +191,8 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
         await remove(key).catch(() => {});
         return res.status(413).json({ error: 'File is over your limit' });
       }
+      const v = await checkUpload(me, key, info.type, 'post');
+      if (!v.ok) return res.status(v.status ?? 400).json({ error: v.error, blocked: v.blocked });
       // Keep only the newest few: when the limit is reached, the oldest one goes.
       const isImg = info.type in IMAGE_TYPES;
       const cap = kind === 'story' ? LIMITS.caps.story : kind === 'reel' ? LIMITS.caps.reel : isImg ? LIMITS.caps.albumImage : LIMITS.caps.albumVideo;
@@ -213,7 +230,7 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
     const visible = new Set([me.userId, ...me.friends]);
     const now = Date.now();
     const posts = data.posts
-      .filter(p => p.kind !== 'album' && visible.has(p.ownerId) && (p.expiresAt === null || p.expiresAt > now))
+      .filter(p => (p.kind === 'story' || p.kind === 'reel') && visible.has(p.ownerId) && (p.expiresAt === null || p.expiresAt > now))
       .sort((a, b) => b.createdAt - a.createdAt)
       .slice(0, 100);
     try {
@@ -254,7 +271,25 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
     const live = mine.filter(p => p.kind === 'story' && (p.expiresAt === null || p.expiresAt > nowTs)).sort((a, b) => a.createdAt - b.createdAt);
     let photoUrl: string | null = null;
     if (r2Enabled && owner.photo) photoUrl = await signGet(owner.photo.key, { expiresIn: LINK_SECONDS }).catch(() => null);
+    const urlOf = async (key?: string) => (r2Enabled && key ? await signGet(key, { expiresIn: LINK_SECONDS }).catch(() => null) : null);
+    const business = {
+      phone: self || owner.showPhone ? (owner.phone ?? '') : '',
+      showPhone: !!owner.showPhone,
+      businessName: owner.businessName ?? '',
+      bizCategory: owner.bizCategory ?? '',
+      description: owner.bizDescription ?? '',
+      address: owner.bizAddress ?? '',
+      mapLink: owner.mapLink ?? '',
+      hours: owner.bizHours ?? null,
+      email: owner.email ?? '',
+      website: owner.website ?? '',
+      about: owner.about ?? '',
+      socials: owner.socials ?? {},
+      coverUrl: await urlOf(owner.cover?.key),
+      products: await Promise.all((owner.products ?? []).map(async p => ({ id: p.id, name: p.name, price: p.price, description: p.description, photoUrl: await urlOf(p.photo?.key) })))
+    };
     const base = {
+      business,
       user: {
         userId: owner.userId,
         name: owner.name,
@@ -289,6 +324,8 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
 
   // ---------- editing my own profile ----------
 
+  const BIZ_CATEGORIES = ['Retail / Shop', 'Restaurant / Cafe', 'Grocery', 'Fashion & Clothing', 'Electronics', 'Beauty & Salon', 'Health & Pharmacy', 'Services', 'Education', 'Real Estate', 'Automobile', 'Other'];
+  const SOCIALS = ['instagram', 'facebook', 'youtube', 'x', 'linkedin', 'whatsapp'];
   const CATEGORIES = ['Digital Creator', 'Software Engineer', 'Musician', 'Artist', 'Photographer', 'Student', 'Entrepreneur', 'Teacher', 'Other'];
   const GENDERS = ['Female', 'Male', 'Non-binary', 'Other', 'Prefer not to say'];
   const HANDLE_RE = /^(?![.])(?!.*\.\.)(?!.*[.]$)[a-z0-9._]{3,30}$/;
@@ -354,6 +391,71 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
         me.birthday = String(b.birthday);
       }
     }
+    // ----- business details -----
+    const text = (v: unknown, max: number) => String(v ?? '').trim().slice(0, max);
+    const cleanUrl = (v: unknown): string | null => {
+      const s = String(v ?? '').trim();
+      if (!s) return '';
+      try {
+        const u = new URL(/^https?:\/\//i.test(s) ? s : `https://${s}`);
+        if (!/^https?:$/.test(u.protocol) || !u.hostname.includes('.')) return null;
+        return u.toString().slice(0, 300);
+      } catch {
+        return null;
+      }
+    };
+    if (b.phone !== undefined) {
+      const phone = String(b.phone).replace(/[\s-]/g, '');
+      if (!/^\+?[0-9]{8,15}$/.test(phone)) return bad('Enter a valid phone number (digits only, with country code if outside India)');
+      me.phone = phone;
+    }
+    if (typeof b.showPhone === 'boolean') me.showPhone = b.showPhone;
+    if (b.businessName !== undefined) {
+      const v = text(b.businessName, 60);
+      if (!v) return bad('Business name is required');
+      me.businessName = v;
+    }
+    if (b.bizCategory !== undefined) {
+      if (!BIZ_CATEGORIES.includes(b.bizCategory)) return bad('Choose a business category');
+      me.bizCategory = b.bizCategory;
+    }
+    const optional = (field: 'bizDescription' | 'bizAddress' | 'about', v: unknown, max: number) => {
+      const t = text(v, max);
+      if (t) me[field] = t;
+      else delete me[field];
+    };
+    if (b.bizDescription !== undefined) optional('bizDescription', b.bizDescription, 500);
+    if (b.bizAddress !== undefined) optional('bizAddress', b.bizAddress, 200);
+    if (b.about !== undefined) optional('about', b.about, 140);
+    for (const [field, label] of [['mapLink', 'Google location'], ['website', 'Website']] as const) {
+      if (b[field] === undefined) continue;
+      const u = cleanUrl(b[field]);
+      if (u === null) return bad(`${label} must be a valid link`);
+      if (u) me[field] = u;
+      else delete me[field];
+    }
+    if (b.email !== undefined) {
+      const e = text(b.email, 120);
+      if (e && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) return bad('Enter a valid email address');
+      if (e) me.email = e;
+      else delete me.email;
+    }
+    if (b.bizHours === null) delete me.bizHours;
+    else if (b.bizHours !== undefined) {
+      const h = b.bizHours;
+      const ok = Array.isArray(h) && h.length === 7 && h.every(d => d && typeof d.closed === 'boolean' && /^\d{2}:\d{2}$/.test(d.open) && /^\d{2}:\d{2}$/.test(d.close));
+      if (!ok) return bad('Invalid business hours');
+      me.bizHours = h.map((d: { open: string; close: string; closed: boolean }) => ({ open: d.open, close: d.close, closed: d.closed }));
+    }
+    if (b.socials !== undefined && b.socials && typeof b.socials === 'object') {
+      const out: Record<string, string> = {};
+      for (const k of SOCIALS) {
+        const u = cleanUrl((b.socials as Record<string, unknown>)[k]);
+        if (u === null) return bad(`${k} link must be a valid link`);
+        if (u) out[k] = u;
+      }
+      me.socials = out;
+    }
     if (typeof b.showGender === 'boolean') me.showGender = b.showGender;
     if (typeof b.showBirthday === 'boolean') me.showBirthday = b.showBirthday;
     save();
@@ -372,6 +474,8 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
         await remove(key).catch(() => {});
         return res.status(413).json({ error: 'Picture is too large' });
       }
+      const v = await checkUpload(me, key, info.type, 'profile photo');
+      if (!v.ok) return res.status(v.status ?? 400).json({ error: v.error, blocked: v.blocked });
       const old = me.photo?.key;
       me.photo = { key, at: Date.now() };
       save();
@@ -391,6 +495,71 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
     save();
     if (old && r2Enabled) await remove(old).catch(() => {});
     profileChanged(me);
+    res.json({ ok: true });
+  });
+
+  // ---------- business: cover photo and product catalogue ----------
+
+  router.post('/profile/cover', requireAuth, needStorage, async (req, res) => {
+    const me = res.locals.user as User;
+    const { key } = req.body ?? {};
+    if (typeof key !== 'string' || !key.startsWith(`covers/${me.userId}/`)) return res.status(400).json({ error: 'Invalid request' });
+    try {
+      const info = await head(key);
+      if (!info) return res.status(400).json({ error: 'Upload not found. Please try again.' });
+      if (info.size > LIMITS.coverBytes || !(info.type in IMAGE_TYPES)) {
+        await remove(key).catch(() => {});
+        return res.status(413).json({ error: 'Cover photo is too large' });
+      }
+      const v = await checkUpload(me, key, info.type, 'cover photo');
+      if (!v.ok) return res.status(v.status ?? 400).json({ error: v.error, blocked: v.blocked });
+      const old = me.cover?.key;
+      me.cover = { key, at: Date.now() };
+      save();
+      if (old && old !== key) await remove(old).catch(() => {});
+      res.json({ ok: true });
+    } catch (e) {
+      console.error('cover failed', e);
+      res.status(500).json({ error: 'Could not save the cover photo' });
+    }
+  });
+
+  router.delete('/profile/cover', requireAuth, async (_req, res) => {
+    const me = res.locals.user as User;
+    const old = me.cover?.key;
+    delete me.cover;
+    save();
+    if (old && r2Enabled) await remove(old).catch(() => {});
+    res.json({ ok: true });
+  });
+
+  router.post('/products', requireAuth, async (req, res) => {
+    const me = res.locals.user as User;
+    const { name, price, description, key } = req.body ?? {};
+    const n = String(name ?? '').trim().slice(0, 60);
+    if (!n) return res.status(400).json({ error: 'Product name is required' });
+    if ((me.products ?? []).length >= LIMITS.maxProducts) return res.status(400).json({ error: `You can list up to ${LIMITS.maxProducts} products` });
+    const product: Product = { id: crypto.randomUUID(), name: n, price: String(price ?? '').trim().slice(0, 30), description: String(description ?? '').trim().slice(0, 300) };
+    if (key !== undefined && key !== null) {
+      if (typeof key !== 'string' || !key.startsWith(`products/${me.userId}/`) || !r2Enabled) return res.status(400).json({ error: 'Invalid photo' });
+      const info = await head(key).catch(() => null);
+      if (!info || info.size > LIMITS.avatarBytes || !(info.type in IMAGE_TYPES)) return res.status(400).json({ error: 'Product photo not found or too large' });
+      const v = await checkUpload(me, key, info.type, 'product photo');
+      if (!v.ok) return res.status(v.status ?? 400).json({ error: v.error, blocked: v.blocked });
+      product.photo = { key };
+    }
+    me.products = [...(me.products ?? []), product];
+    save();
+    res.json({ ok: true });
+  });
+
+  router.delete('/products/:id', requireAuth, async (req, res) => {
+    const me = res.locals.user as User;
+    const p = (me.products ?? []).find(x => x.id === req.params.id);
+    if (!p) return res.status(404).json({ error: 'Not found' });
+    me.products = (me.products ?? []).filter(x => x.id !== p.id);
+    save();
+    if (p.photo && r2Enabled) await remove(p.photo.key).catch(() => {});
     res.json({ ok: true });
   });
 
