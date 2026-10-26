@@ -59,6 +59,43 @@ function syncAdminFriends(): boolean {
   if (changed) save();
   return changed;
 }
+/**
+ * Gives people every past admin broadcast they have not got yet, in the original order.
+ * Runs when someone registers and when the server starts, so new users see the whole history.
+ */
+function syncBroadcasts(): boolean {
+  const admin = data.users[ADMIN_ID];
+  if (!admin) return false;
+  const sent = data.messages.filter(m => m.senderId === ADMIN_ID && m.broadcast);
+  const seen = new Map<string, Message>(); // one entry per broadcast
+  for (const m of sent) {
+    const key = m.broadcastId ?? m.message;
+    if (!seen.has(key) || m.timestamp < seen.get(key)!.timestamp) seen.set(key, m);
+  }
+  const all = [...seen.entries()].sort((a, b) => a[1].timestamp - b[1].timestamp);
+  let added = false;
+  for (const u of Object.values(data.users)) {
+    if (u.userId === ADMIN_ID) continue;
+    const have = new Set(sent.filter(m => m.recipientId === u.userId).map(m => m.broadcastId ?? m.message));
+    for (const [key, original] of all) {
+      if (have.has(key)) continue;
+      addMessage({
+        id: crypto.randomUUID(),
+        senderId: ADMIN_ID,
+        recipientId: u.userId,
+        message: original.message,
+        timestamp: original.timestamp,
+        status: 'sent',
+        reactions: {},
+        broadcast: true,
+        broadcastId: original.broadcastId
+      });
+      added = true;
+    }
+  }
+  if (added) save();
+  return added;
+}
 const areFriends = (a: string, b: string) => !!data.users[a]?.friends.includes(b);
 
 const buckets = new Map<string, { count: number; reset: number }>();
@@ -124,6 +161,7 @@ app.post('/api/register', rateLimit(10, 60_000), (req, res) => {
   };
   data.users[id] = user;
   syncAdminFriends();
+  syncBroadcasts();
   save();
   // The admin's list updates live when someone new joins.
   if (id !== ADMIN_ID && data.users[ADMIN_ID]) io.to(`user:${ADMIN_ID}`).emit('friend-added', friendView(user));
@@ -224,6 +262,7 @@ app.post('/api/broadcast', requireAuth, rateLimit(20, 60_000), (req, res) => {
   const text = typeof req.body?.message === 'string' ? req.body.message.trim().slice(0, 2000) : '';
   if (!text) return res.status(400).json({ error: 'Write a message first' });
   syncAdminFriends();
+  const broadcastId = crypto.randomUUID();
   let sent = 0;
   for (const u of Object.values(data.users)) {
     if (u.userId === me.userId) continue;
@@ -235,7 +274,8 @@ app.post('/api/broadcast', requireAuth, rateLimit(20, 60_000), (req, res) => {
       timestamp: Date.now(),
       status: isOnline(u.userId) ? 'received' : 'sent',
       reactions: {},
-      broadcast: true
+      broadcast: true,
+      broadcastId
     };
     addMessage(msg);
     io.to(`user:${u.userId}`).to(`user:${me.userId}`).emit('chat-message', msg);
@@ -515,6 +555,7 @@ io.on('connection', socket => {
 
 async function start() {
   await initStore();
+  syncBroadcasts(); // everyone also gets the older broadcasts they missed
   syncAdminFriends(); // everyone who joined before gets the admin as a friend too
   app.use('/api', networkRouter({ requireAuth, areFriends, isAdmin: (u: User) => u.userId === ADMIN_ID }));
   app.use('/api', mediaRouter({
