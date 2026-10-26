@@ -54,6 +54,8 @@ export interface User {
   socials?: Record<string, string>;
   cover?: { key: string; at: number };
   products?: Product[];
+  /** Private = only friends see the profile and feed posts. Public = anyone on Kite Network. */
+  profileType?: 'private' | 'public';
   /** Adult-content strikes. Two strikes = blocked. */
   strikes?: { at: number; where: string }[];
   blocked?: boolean;
@@ -85,6 +87,8 @@ export interface Message {
   file?: FileInfo;
   /** Sent by the admin to everyone at once. */
   broadcast?: boolean;
+  /** Same value on every copy of one broadcast. */
+  broadcastId?: string;
 }
 
 export interface Post {
@@ -245,5 +249,5 @@ export function messagesFor(userId: string, limit = 1000): Message[] {
     const m = data.messages[i];
     if (m.senderId === userId || m.recipientId === userId) out.push(m);
   }
-  return out.reverse();
+  return out.reverse().sort((a, b) => a.timestamp - b.timestamp);
 }

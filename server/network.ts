@@ -2,7 +2,7 @@ import { Router, type RequestHandler } from 'express';
 import crypto from 'crypto';
 import { data, save, type Post, type User } from './store.ts';
 import { r2Enabled, signGet, head, remove } from './r2.ts';
-import { checkUpload, listBlocked, moderationEnabled } from './moderation.ts';
+import { checkUpload, listBlocked, moderationEnabled, profilePublic } from './moderation.ts';
 
 const HOUR = 60 * 60 * 1000;
 const LINK_SECONDS = 60 * 60;
@@ -21,10 +21,20 @@ interface Deps {
 export function networkRouter({ requireAuth, areFriends, isAdmin }: Deps) {
   const router = Router();
 
-  const canSee = (me: User, p: Post) =>
-    p.kind === 'network' &&
-    (data.users[p.ownerId]?.blocked ? p.ownerId === me.userId || isAdmin(me) : true) &&
-    (p.ownerId === me.userId || isAdmin(me) || (!me.hidden?.includes(p.ownerId) && (p.visibility === 'public' || areFriends(me.userId, p.ownerId))));
+  /** Feed posts from "Stories & Reels" (album) and older direct network posts. */
+  const isNet = (p: Post) => p.kind === 'network' || p.kind === 'album';
+
+  /** Public posts: everyone. Friends-only (and older posts without a setting): the owner and friends. */
+  const canSee = (me: User, p: Post, feed = false) => {
+    if (!isNet(p)) return false;
+    const owner = data.users[p.ownerId];
+    if (owner?.blocked && p.ownerId !== me.userId && !isAdmin(me)) return false;
+    if (p.ownerId === me.userId) return true;
+    // The admin can open a private post only when somebody reported it.
+    if (!feed && isAdmin(me) && data.reports.some(r => r.postId === p.id)) return true;
+    if (me.hidden?.includes(p.ownerId)) return false;
+    return profilePublic(owner) || areFriends(me.userId, p.ownerId);
+  };
 
   const urlOf = async (key?: string) => (r2Enabled && key ? await signGet(key, { expiresIn: LINK_SECONDS }).catch(() => null) : null);
 
@@ -62,7 +72,7 @@ export function networkRouter({ requireAuth, areFriends, isAdmin }: Deps) {
       mime: p.mime,
       url: await urlOf(p.key),
       caption: p.caption,
-      visibility: p.visibility ?? 'friends',
+      visibility: profilePublic(owner) ? 'public' : 'friends',
       createdAt: p.createdAt,
       counts,
       total: Object.keys(p.likes ?? {}).length,
@@ -133,7 +143,7 @@ export function networkRouter({ requireAuth, areFriends, isAdmin }: Deps) {
     const before = Number(req.query.before) || Infinity;
     const limit = Math.min(20, Math.max(1, Number(req.query.limit) || 10));
     const list = data.posts
-      .filter(p => p.kind === 'network' && p.createdAt < before && canSee(me, p))
+      .filter(p => isNet(p) && p.createdAt < before && canSee(me, p, true))
       .sort((a, b) => b.createdAt - a.createdAt)
       .slice(0, limit + 1);
     const more = list.length > limit;
@@ -210,7 +220,7 @@ export function networkRouter({ requireAuth, areFriends, isAdmin }: Deps) {
   router.patch('/network/posts/:id', requireAuth, (req, res) => {
     const me = res.locals.user as User;
     const p = data.posts.find(x => x.id === req.params.id);
-    if (!p || p.kind !== 'network' || p.ownerId !== me.userId) return res.status(404).json({ error: 'Not found' });
+    if (!p || !isNet(p) || p.ownerId !== me.userId) return res.status(404).json({ error: 'Not found' });
     if (req.body?.visibility === 'public') {
       if (!isAdmin(me) && Date.now() - me.createdAt < MIN_ACCOUNT_AGE) return res.status(403).json({ error: 'New accounts can post publicly after 24 hours.' });
       p.visibility = 'public';
@@ -223,7 +233,7 @@ export function networkRouter({ requireAuth, areFriends, isAdmin }: Deps) {
   router.delete('/network/posts/:id', requireAuth, async (req, res) => {
     const me = res.locals.user as User;
     const p = data.posts.find(x => x.id === req.params.id);
-    if (!p || p.kind !== 'network' || (p.ownerId !== me.userId && !isAdmin(me))) return res.status(404).json({ error: 'Not found' });
+    if (!p || !isNet(p) || (p.ownerId !== me.userId && !isAdmin(me))) return res.status(404).json({ error: 'Not found' });
     await dropPost(p);
     res.json({ ok: true });
   });

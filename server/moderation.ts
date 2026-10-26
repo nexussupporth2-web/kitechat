@@ -23,6 +23,15 @@ interface Nudity {
 const bad = (n?: Nudity) =>
   !!n && ((n.sexual_activity ?? 0) >= HARD || (n.sexual_display ?? 0) >= HARD || (n.erotica ?? 0) >= HARD || (n.very_suggestive ?? 0) >= SOFT);
 
+const ADMIN = (process.env.ADMIN_ID || 'KITE_ADMIN').trim().toUpperCase();
+
+/**
+ * Is this person's profile really public right now? They chose Public, the adult-content check is switched on,
+ * and the account is older than 24 hours (the admin is exempt from the 24 hours).
+ */
+export const profilePublic = (u: User | undefined) =>
+  !!u && u.profileType === 'public' && moderationEnabled && (u.userId === ADMIN || Date.now() - u.createdAt >= 24 * 60 * 60 * 1000);
+
 export type ScanResult = 'clean' | 'adult' | 'error';
 
 /** Looks at the uploaded file in storage. Photos are checked by link, videos by frames. */

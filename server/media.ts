@@ -2,7 +2,7 @@ import { Router, type NextFunction, type Request, type RequestHandler, type Resp
 import type { Server } from 'socket.io';
 import crypto from 'crypto';
 import { data, messageIndex, addMessage, save, type Message, type Post, type Product, type Share, type User } from './store.ts';
-import { checkUpload } from './moderation.ts';
+import { checkUpload, profilePublic } from './moderation.ts';
 import { r2Enabled, signPut, signGet, head, remove } from './r2.ts';
 
 const MB = 1024 * 1024;
@@ -261,7 +261,7 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
   router.get('/profile/:userId', requireAuth, async (req, res) => {
     const me = res.locals.user as User;
     const owner = data.users[String(req.params.userId)];
-    if (!owner || (owner.userId !== me.userId && !areFriends(me.userId, owner.userId))) {
+    if (!owner || (owner.userId !== me.userId && !areFriends(me.userId, owner.userId) && !profilePublic(owner))) {
       return res.status(404).json({ error: 'Not found' });
     }
     const mine = data.posts.filter(p => p.ownerId === owner.userId);
@@ -290,7 +290,10 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
     };
     const base = {
       business,
+      isFriend: self || areFriends(me.userId, owner.userId),
       user: {
+        profileType: owner.profileType ?? 'private',
+        publicActive: profilePublic(owner),
         userId: owner.userId,
         name: owner.name,
         avatar: owner.avatar,
@@ -455,6 +458,10 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
         if (u) out[k] = u;
       }
       me.socials = out;
+    }
+    if (b.profileType !== undefined) {
+      if (b.profileType !== 'private' && b.profileType !== 'public') return bad('Invalid profile type');
+      me.profileType = b.profileType;
     }
     if (typeof b.showGender === 'boolean') me.showGender = b.showGender;
     if (typeof b.showBirthday === 'boolean') me.showBirthday = b.showBirthday;
