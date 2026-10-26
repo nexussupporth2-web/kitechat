@@ -14,6 +14,8 @@ interface Me {
   birthday: string;
   showGender: boolean;
   showBirthday: boolean;
+  profileType: 'private' | 'public';
+  publicActive: boolean;
 }
 
 interface Props {
@@ -144,6 +146,7 @@ function Editor({ me, biz, onClose, onSaved, onPhotoChanged }: { me: Me; biz: Bu
   const [socials, setSocials] = useState<Record<string, string>>(biz.socials);
   const [addingProduct, setAddingProduct] = useState(false);
   const coverRef = useRef<HTMLInputElement>(null);
+  const [profileType, setProfileType] = useState<'private' | 'public'>(me.profileType);
   const [sheet, setSheet] = useState(false);
   const [picking, setPicking] = useState<'avatars' | null>(null);
   const [cropFile, setCropFile] = useState<File | null>(null);
@@ -268,6 +271,7 @@ function Editor({ me, biz, onClose, onSaved, onPhotoChanged }: { me: Me; biz: Bu
         name: name.trim(),
         handle: handle.trim().toLowerCase(),
         category,
+        profileType,
         phone,
         showPhone,
         businessName,
@@ -381,6 +385,26 @@ function Editor({ me, biz, onClose, onSaved, onPhotoChanged }: { me: Me; biz: Bu
               <input type="date" value={birthday} max={new Date().toISOString().slice(0, 10)} onChange={e => setBirthday(e.target.value)} className={inputCls} />
             </label>
             <Toggle label="Visible on profile" on={showBirthday} onChange={setShowBirthday} hint={showBirthday ? 'Friends can see this' : 'Only me'} />
+          </div>
+
+          {/* Profile type */}
+          <div>
+            <span className="text-xs text-slate-400 mb-1.5 block">Profile type</span>
+            <div className="space-y-2">
+              {([
+                ['private', 'Private Profile', 'Only friends in chat can see your profile and feed posts'],
+                ['public', 'Public Profile', 'Anyone on Kite 🪁 Network can see your profile and feed posts']
+              ] as const).map(([v, label, hint]) => (
+                <button key={v} type="button" onClick={() => setProfileType(v)} className={`w-full text-left rounded-2xl border px-4 py-3 ${profileType === v ? 'border-cyan-500 bg-cyan-500/10' : 'border-slate-800'}`}>
+                  <span className="block text-sm font-semibold text-white">{profileType === v ? '● ' : '○ '}{label}</span>
+                  <span className="block text-[11px] text-slate-400">{hint}</span>
+                </button>
+              ))}
+            </div>
+            <p className="mt-1.5 text-[11px] text-slate-500">Feed posts stay visible until you delete them from your profile.</p>
+            {profileType === 'public' && !me.publicActive && (
+              <p className="mt-1 text-[11px] text-amber-300">Public starts working once the adult-content check is on and your account is 24 hours old. Until then only friends can see it.</p>
+            )}
           </div>
 
           {/* Business: required */}

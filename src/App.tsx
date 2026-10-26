@@ -7,7 +7,7 @@ import Avatar from './Avatar.tsx';
 import Chat from './Chat.tsx';
 import CallScreen from './CallScreen.tsx';
 import Feed from './Feed.tsx';
-import Network from './Network.tsx';
+import Network, { Moderation } from './Network.tsx';
 import Profile from './Profile.tsx';
 import ProfileSettings from './ProfileSettings.tsx';
 import { downloadSharedFile, sendFileToFriend, type MediaConfig } from './media.ts';
@@ -120,6 +120,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
   const [tab, setTab] = useState<'chats' | 'feed' | 'network' | 'profile'>('chats');
   const [menuOpen, setMenuOpen] = useState(false);
   const [broadcastOpen, setBroadcastOpen] = useState(false);
+  const [moderationOpen, setModerationOpen] = useState(false);
   const [broadcastText, setBroadcastText] = useState('');
   const [broadcastBusy, setBroadcastBusy] = useState(false);
   const [broadcastNote, setBroadcastNote] = useState('');
@@ -397,6 +398,11 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
                     📢 Send broadcast
                   </button>
                 )}
+                {user.isAdmin && (
+                  <button role="menuitem" onClick={() => { setMenuOpen(false); setModerationOpen(true); }} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">
+                    🛡️ Moderation
+                  </button>
+                )}
                 <button role="menuitem" onClick={() => { setMenuOpen(false); onLogout(); }} className="w-full text-left px-4 py-3 text-sm text-rose-400 hover:bg-slate-800 flex items-center gap-2">
                   <LogOut className="w-4 h-4" /> Logout
                 </button>
@@ -408,7 +414,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
 
       <main className="flex-1 flex min-h-0">
         {tab === 'network' ? (
-          <Network me={user} onBlocked={onLogout} />
+          <Network me={user} onBlocked={onLogout} onOpenProfile={setProfileFor} />
         ) : tab === 'feed' ? (
           <Feed me={user.userId} />
         ) : tab === 'profile' ? (
@@ -530,6 +536,8 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
           />
         </div>
       )}
+
+      {moderationOpen && <Moderation onClose={() => setModerationOpen(false)} onChanged={() => {}} />}
 
       {broadcastOpen && (
         <Modal onClose={() => !broadcastBusy && setBroadcastOpen(false)}>

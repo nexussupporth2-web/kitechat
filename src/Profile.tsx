@@ -15,6 +15,7 @@ interface Item {
 
 interface ProfileData {
   business: Business;
+  isFriend: boolean;
   user: {
     userId: string;
     name: string;
@@ -56,6 +57,7 @@ export default function Profile({ userId, isMe, onBack, onMessage, children }: P
   const [chooser, setChooser] = useState(false);
   const [statusAt, setStatusAt] = useState<number | null>(null);
   const target = useRef<'album' | 'story'>('album');
+  const vis = useRef<'public' | 'friends'>('public');
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -82,7 +84,7 @@ export default function Profile({ userId, isMe, onBack, onMessage, children }: P
     setProgress({ phase: 'compressing', p: 0 });
     try {
       const kind = target.current;
-      await publishPost(kind, file, '', cfg, (phase, p) => setProgress({ phase, p }));
+      await publishPost(kind, file, '', cfg, (phase, p) => setProgress({ phase, p }), vis.current);
       if (kind === 'album') setTab(file.type.startsWith('video/') ? 'videos' : 'images');
       await load();
     } catch (err) {
@@ -92,8 +94,9 @@ export default function Profile({ userId, isMe, onBack, onMessage, children }: P
     }
   };
 
-  const pick = (kind: 'album' | 'story') => {
+  const pick = (kind: 'album' | 'story', visibility: 'public' | 'friends' = 'public') => {
     target.current = kind;
+    vis.current = visibility;
     setChooser(false);
     fileRef.current?.click();
   };
@@ -198,7 +201,7 @@ export default function Profile({ userId, isMe, onBack, onMessage, children }: P
               </button>
             </>
           ) : (
-            <button onClick={onMessage} className="w-full py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white text-sm font-semibold flex items-center justify-center gap-2">
+            data.isFriend && <button onClick={onMessage} className="w-full py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white text-sm font-semibold flex items-center justify-center gap-2">
               <MessageSquare className="w-4 h-4" /> Message
             </button>
           )}
@@ -265,7 +268,7 @@ export default function Profile({ userId, isMe, onBack, onMessage, children }: P
             <h3 className="text-base font-semibold text-white text-center">Where should it go?</h3>
             <button onClick={() => pick('album')} className="w-full py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white text-sm font-semibold">
               To Feed
-              <span className="block text-[11px] font-normal text-slate-400">Stays on your profile</span>
+              <span className="block text-[11px] font-normal text-slate-400">Stays until you delete it. Who can see it depends on your Profile type</span>
             </button>
             <button onClick={() => pick('story')} className="w-full py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white text-sm font-semibold">
               To Status

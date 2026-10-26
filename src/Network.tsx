@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Flag, MessageCircle, MoreHorizontal, Plus, Send, Trash2, X } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { Flag, MessageCircle, MoreHorizontal, Send, Trash2, X } from 'lucide-react';
 import { api, ApiError } from './api.ts';
 import Avatar from './Avatar.tsx';
-import { phaseLabel, publishNetwork, type Phase } from './media.ts';
 import type { User } from './types.ts';
 
 interface Post {
@@ -32,21 +31,22 @@ interface Comment {
 const ago = (t: number) => {
   const s = Math.max(1, Math.floor((Date.now() - t) / 1000));
   if (s < 60) return 'just now';
-  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
-  return `${Math.floor(s / 86400)} d ago`;
+  if (s < 3600) return `${Math.floor(s / 60)} minutes ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} hours ago`;
+  const d = Math.floor(s / 86400);
+  return `${d} ${d === 1 ? 'day' : 'days'} ago`;
 };
 
-/** Kite Network: posts from everyone. Public posts are visible to all; friends-only posts only to friends. */
-export default function Network({ me, onBlocked }: { me: User; onBlocked: () => void }) {
+/**
+ * Kite Network: every feed post from "Stories & Reels", in one vertical scroll.
+ * Nobody posts here directly. Public posts are visible to all; friends-only posts only to friends.
+ */
+export default function Network({ me, onBlocked, onOpenProfile }: { me: User; onBlocked: () => void; onOpenProfile: (userId: string) => void }) {
   const [posts, setPosts] = useState<Post[]>([]);
   const [next, setNext] = useState<number | null>(null);
   const [emojis, setEmojis] = useState<string[]>(['❤️', '😂', '😮', '😢', '👏', '🔥', '🙏', '👍']);
-  const [enabled, setEnabled] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [composing, setComposing] = useState(false);
-  const [moderating, setModerating] = useState(false);
 
   const fail = useCallback(
     (e: unknown, fallback: string) => {
@@ -74,11 +74,8 @@ export default function Network({ me, onBlocked }: { me: User; onBlocked: () => 
 
   useEffect(() => {
     void load();
-    api<{ enabled: boolean; emojis: string[] }>('/api/network/config')
-      .then(c => {
-        setEnabled(c.enabled);
-        setEmojis(c.emojis);
-      })
+    api<{ emojis: string[] }>('/api/network/config')
+      .then(c => setEmojis(c.emojis))
       .catch(() => {});
   }, [load]);
 
@@ -87,33 +84,22 @@ export default function Network({ me, onBlocked }: { me: User; onBlocked: () => 
   return (
     <div className="flex-1 overflow-y-auto bg-slate-950">
       <div className="max-w-xl mx-auto pb-16">
-        <div className="flex items-center justify-between px-4 py-4">
-          <h2 className="text-lg font-bold text-white">Kite 🪁 Network</h2>
-          <div className="flex gap-2">
-            {me.isAdmin && (
-              <button onClick={() => setModerating(true)} className="px-3 py-2 rounded-xl bg-slate-800 text-xs text-slate-200">Moderation</button>
-            )}
-            <button onClick={() => setComposing(true)} disabled={!enabled} className="flex items-center gap-1 px-3 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-accent-ink text-xs font-semibold">
-              <Plus className="w-4 h-4" /> Post
-            </button>
-          </div>
-        </div>
-        {!enabled && <p className="mx-4 mb-3 text-xs text-amber-300">Posting is off until the content check is set up on the server.</p>}
-        <p className="mx-4 mb-3 text-[11px] text-slate-500">No adult content. Every photo and video is checked automatically. Rule breakers are warned once, then blocked.</p>
+        <h2 className="px-4 py-4 text-lg font-bold text-white">Kite 🪁 Network</h2>
         {error && <p role="alert" className="mx-4 mb-3 text-xs text-rose-400">{error}</p>}
 
         {loading ? (
           <p className="text-center text-sm text-slate-500 py-12">Loading…</p>
         ) : posts.length === 0 ? (
-          <p className="text-center text-sm text-slate-500 py-12">No posts yet. Be the first to post.</p>
+          <p className="text-center text-sm text-slate-500 py-12 px-6">No posts yet. Posts added with “Stories &amp; Reels” show up here.</p>
         ) : (
-          <div className="space-y-4">
+          <div>
             {posts.map(p => (
               <PostCard
                 key={p.id}
                 post={p}
                 emojis={emojis}
                 me={me}
+                onOpenProfile={onOpenProfile}
                 onChange={f => patch(p.id, f)}
                 onGone={() => setPosts(list => list.filter(x => x.id !== p.id))}
                 onHiddenUser={uid => setPosts(list => list.filter(x => x.owner.userId !== uid))}
@@ -121,23 +107,11 @@ export default function Network({ me, onBlocked }: { me: User; onBlocked: () => 
               />
             ))}
             {next && (
-              <button onClick={() => load(next)} className="block mx-auto px-5 py-2 rounded-xl bg-slate-800 text-sm text-slate-200">Load more</button>
+              <button onClick={() => load(next)} className="block mx-auto my-6 px-5 py-2 rounded-xl bg-slate-800 text-sm text-slate-200">Load more</button>
             )}
           </div>
         )}
       </div>
-
-      {composing && (
-        <Composer
-          onClose={() => setComposing(false)}
-          onBlocked={onBlocked}
-          onDone={async () => {
-            setComposing(false);
-            await load();
-          }}
-        />
-      )}
-      {moderating && <Moderation onClose={() => setModerating(false)} onChanged={() => load()} />}
     </div>
   );
 }
@@ -146,6 +120,7 @@ function PostCard({
   post,
   emojis,
   me,
+  onOpenProfile,
   onChange,
   onGone,
   onHiddenUser,
@@ -154,6 +129,7 @@ function PostCard({
   post: Post;
   emojis: string[];
   me: User;
+  onOpenProfile: (userId: string) => void;
   onChange: (f: (p: Post) => Post) => void;
   onGone: () => void;
   onHiddenUser: (uid: string) => void;
@@ -263,26 +239,25 @@ function PostCard({
   const item = 'w-full text-left px-4 py-3 text-sm hover:bg-slate-800';
 
   return (
-    <article className="bg-slate-900 border border-slate-800 sm:rounded-2xl overflow-hidden">
+    <article className="border-b border-slate-800 pb-4 mb-2">
+      {/* Header: picture, name and business, menu */}
       <div className="flex items-center gap-3 px-4 py-3 relative">
-        <Avatar avatar={post.owner.avatar} photoUrl={post.owner.photoUrl} className="w-10 h-10 text-sm" />
-        <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold text-white truncate">{post.owner.name}</div>
-          <div className="text-[11px] text-slate-400 truncate">
-            {post.owner.businessName ? `${post.owner.businessName} · ` : ''}
-            {ago(post.createdAt)} · {post.visibility === 'public' ? '🌐 Public' : '👥 Friends'}
+        <button onClick={() => onOpenProfile(post.owner.userId)} aria-label="Open profile"><Avatar avatar={post.owner.avatar} photoUrl={post.owner.photoUrl} className="w-11 h-11 text-base" /></button>
+        <div className="min-w-0 flex-1 cursor-pointer" onClick={() => onOpenProfile(post.owner.userId)}>
+          <div className="text-base font-bold text-white truncate">{post.owner.name}</div>
+          <div className="text-xs text-slate-400 truncate">
+            {post.owner.businessName || post.owner.userId} · {post.visibility === 'public' ? '🌐' : '👥'}
           </div>
         </div>
-        <button onClick={() => setMenu(!menu)} className="w-9 h-9 rounded-full hover:bg-slate-800 text-slate-300 flex items-center justify-center" aria-label="More">
-          <MoreHorizontal className="w-5 h-5" />
+        <button onClick={() => setMenu(!menu)} className="w-10 h-10 rounded-full hover:bg-slate-800 text-slate-200 flex items-center justify-center" aria-label="More">
+          <MoreHorizontal className="w-6 h-6" />
         </button>
         {menu && (
           <>
             <div className="fixed inset-0 z-30" onClick={() => setMenu(false)} />
-            <div className="absolute right-3 top-12 z-40 w-56 bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl py-1 overflow-hidden">
+            <div className="absolute right-3 top-14 z-40 w-56 bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl py-1 overflow-hidden">
               {post.isOwner ? (
                 <>
-                  <button className={`${item} text-white`} onClick={() => doMenu('visibility')}>{post.visibility === 'public' ? 'Make friends only' : 'Make public'}</button>
                   <button className={`${item} text-rose-400`} onClick={() => doMenu('delete')}>Delete post</button>
                 </>
               ) : (
@@ -297,33 +272,27 @@ function PostCard({
         )}
       </div>
 
+      {/* Picture or video, full width */}
       {post.url &&
         (post.mime.startsWith('video/') ? (
-          <video src={post.url} controls playsInline preload="metadata" className="w-full max-h-[70dvh] bg-black" />
+          <video src={post.url} controls playsInline preload="metadata" className="w-full max-h-[75dvh] bg-black" />
         ) : (
-          <img src={post.url} alt="" loading="lazy" className="w-full max-h-[70dvh] object-contain bg-black" />
+          <img src={post.url} alt="" loading="lazy" className="w-full max-h-[75dvh] object-contain bg-black" />
         ))}
 
-      {post.caption && <p className="px-4 pt-3 text-sm text-slate-200 whitespace-pre-line break-words">{post.caption}</p>}
-
-      <div className="px-4 py-3 relative">
-        <div className="flex items-center gap-4">
-          <button onClick={() => (post.mine ? react(null) : setPicker(!picker))} onContextMenu={e => { e.preventDefault(); setPicker(true); }} className="flex items-center gap-1.5 text-sm text-slate-200">
-            <span className="text-xl leading-none">{post.mine ?? '🤍'}</span>
-            <span>{post.mine ? 'Reacted' : 'Like'}</span>
+      {/* Actions */}
+      <div className="px-4 pt-3 relative">
+        <div className="flex items-center gap-5">
+          <button onClick={() => (post.mine ? react(null) : setPicker(!picker))} className="text-3xl leading-none" aria-label="React">
+            {post.mine ?? '🤍'}
+          </button>
+          <button onClick={toggleComments} className="text-slate-100" aria-label="Comments">
+            <MessageCircle className="w-7 h-7" />
           </button>
           {post.mine && (
-            <button onClick={() => setPicker(!picker)} className="text-xs text-cyan-400">Change</button>
+            <button onClick={() => setPicker(!picker)} className="ml-auto text-xs text-cyan-400">Change reaction</button>
           )}
-          <button onClick={toggleComments} className="flex items-center gap-1.5 text-sm text-slate-200 ml-auto">
-            <MessageCircle className="w-5 h-5" /> {post.commentCount}
-          </button>
         </div>
-        {post.total > 0 && (
-          <div className="mt-2 text-xs text-slate-400">
-            {top.map(([e]) => e).join(' ')} {post.total}
-          </div>
-        )}
         {picker && (
           <>
             <div className="fixed inset-0 z-30" onClick={() => setPicker(false)} />
@@ -336,24 +305,36 @@ function PostCard({
             </div>
           </>
         )}
+        {post.total > 0 && (
+          <div className="mt-2 text-sm font-semibold text-white">
+            {top.map(([e]) => e).join(' ')} {post.total} {post.total === 1 ? 'reaction' : 'reactions'}
+          </div>
+        )}
+        {post.caption && (
+          <p className="mt-1 text-sm text-slate-200 whitespace-pre-line break-words">
+            <span className="font-bold text-white">{post.owner.name}</span> {post.caption}
+          </p>
+        )}
+        {post.commentCount > 0 && !showComments && (
+          <button onClick={toggleComments} className="mt-1 text-sm text-slate-400">View all {post.commentCount} comments</button>
+        )}
+        <div className="mt-1 text-xs text-slate-500">{ago(post.createdAt)}</div>
       </div>
 
       {showComments && (
-        <div className="px-4 pb-4 space-y-3 border-t border-slate-800 pt-3">
+        <div className="px-4 pt-3 space-y-3">
           {comments.length === 0 && <p className="text-xs text-slate-500">No comments yet.</p>}
           {comments.map(c => (
-            <div key={c.id} className="text-sm">
-              <div className="flex items-start gap-2">
-                <div className="min-w-0 flex-1 break-words">
-                  <span className="font-semibold text-white">{c.name}</span> <span className="text-slate-300">{c.text}</span>
-                  <div className="text-[10px] text-slate-500">{ago(c.at)}</div>
-                </div>
-                {c.canDelete ? (
-                  <button onClick={() => delComment(c.id)} className="text-slate-500 hover:text-rose-400" aria-label="Delete comment"><Trash2 className="w-4 h-4" /></button>
-                ) : (
-                  <button onClick={() => reportComment(c.id)} className="text-slate-500 hover:text-amber-300" aria-label="Report comment"><Flag className="w-4 h-4" /></button>
-                )}
+            <div key={c.id} className="flex items-start gap-2 text-sm">
+              <div className="min-w-0 flex-1 break-words">
+                <span className="font-semibold text-white">{c.name}</span> <span className="text-slate-300">{c.text}</span>
+                <div className="text-[10px] text-slate-500">{ago(c.at)}</div>
               </div>
+              {c.canDelete ? (
+                <button onClick={() => delComment(c.id)} className="text-slate-500 hover:text-rose-400" aria-label="Delete comment"><Trash2 className="w-4 h-4" /></button>
+              ) : (
+                <button onClick={() => reportComment(c.id)} className="text-slate-500 hover:text-amber-300" aria-label="Report comment"><Flag className="w-4 h-4" /></button>
+              )}
             </div>
           ))}
           <form onSubmit={sendComment} className="flex gap-2">
@@ -362,71 +343,8 @@ function PostCard({
           </form>
         </div>
       )}
-      {note && <p role="status" className="px-4 pb-3 text-xs text-cyan-400">{note}</p>}
+      {note && <p role="status" className="px-4 pt-2 text-xs text-cyan-400">{note}</p>}
     </article>
-  );
-}
-
-function Composer({ onClose, onDone, onBlocked }: { onClose: () => void; onDone: () => Promise<void>; onBlocked: () => void }) {
-  const [file, setFile] = useState<File | null>(null);
-  const [caption, setCaption] = useState('');
-  const [vis, setVis] = useState<'public' | 'friends'>('friends');
-  const [progress, setProgress] = useState<{ phase: Phase; p: number } | null>(null);
-  const [error, setError] = useState('');
-  const [checking, setChecking] = useState(false);
-  const ref = useRef<HTMLInputElement>(null);
-  const busy = progress !== null || checking;
-
-  const submit = async () => {
-    if (!file) return;
-    setError('');
-    setProgress({ phase: 'compressing', p: 0 });
-    try {
-      await publishNetwork(file, caption.trim(), vis, (phase, p) => {
-        setProgress({ phase, p });
-        if (phase === 'uploading' && p >= 1) setChecking(true);
-      });
-      await onDone();
-    } catch (e) {
-      if (e instanceof ApiError && e.blocked) {
-        window.alert(e.message);
-        return onBlocked();
-      }
-      setError(e instanceof Error ? e.message : 'Could not post');
-    } finally {
-      setProgress(null);
-      setChecking(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center" onClick={() => !busy && onClose()}>
-      <div className="w-full max-w-sm max-h-[92dvh] overflow-y-auto bg-slate-900 border border-slate-800 rounded-t-3xl sm:rounded-3xl p-5 space-y-3" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between">
-          <h3 className="text-base font-bold text-white">New post</h3>
-          <button onClick={onClose} disabled={busy} className="text-slate-400" aria-label="Close"><X className="w-5 h-5" /></button>
-        </div>
-        <input ref={ref} type="file" accept="image/*,video/*" className="hidden" onChange={e => { setFile(e.target.files?.[0] ?? null); e.target.value = ''; }} />
-        <button onClick={() => ref.current?.click()} disabled={busy} className="w-full py-3 rounded-xl bg-slate-800 text-sm text-slate-200">{file ? `Selected: ${file.name}` : 'Choose a photo or video'}</button>
-        <textarea value={caption} onChange={e => setCaption(e.target.value.slice(0, 300))} rows={3} placeholder="Write a caption…" className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-cyan-500 resize-none" />
-        <div className="grid grid-cols-2 gap-2">
-          {(['friends', 'public'] as const).map(v => (
-            <button key={v} onClick={() => setVis(v)} disabled={busy} className={`py-3 rounded-xl text-sm font-medium border ${vis === v ? 'border-cyan-500 bg-cyan-500/10 text-white' : 'border-slate-800 text-slate-400'}`}>
-              {v === 'friends' ? '👥 Friends only' : '🌐 Public'}
-            </button>
-          ))}
-        </div>
-        <p className="text-[11px] text-slate-500">Adult content is not allowed. Your file is checked automatically. The first time it is removed with a final warning. The next time your account is blocked.</p>
-        {progress && (
-          <div>
-            <div className="text-xs text-slate-300 mb-1">{checking ? 'Checking…' : `${phaseLabel(progress.phase)}… ${Math.round(progress.p * 100)}%`}</div>
-            <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden"><div className="h-full bg-cyan-500 transition-all" style={{ width: `${checking ? 100 : progress.p * 100}%` }} /></div>
-          </div>
-        )}
-        {error && <p role="alert" className="text-xs text-rose-400">{error}</p>}
-        <button onClick={submit} disabled={!file || busy} className="w-full py-3 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-accent-ink text-sm font-semibold">{busy ? 'Please wait…' : 'Post'}</button>
-      </div>
-    </div>
   );
 }
 
@@ -452,7 +370,7 @@ interface Blocked {
 }
 
 /** Admin only: reported posts and blocked accounts with their appeals. */
-function Moderation({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
+export function Moderation({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
   const [reports, setReports] = useState<Report[]>([]);
   const [blocked, setBlocked] = useState<Blocked[]>([]);
   const [note, setNote] = useState('Loading…');

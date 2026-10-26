@@ -90,7 +90,7 @@ export async function downloadSharedFile(id: string) {
 }
 
 /** Validate, compress, upload and publish a story/status or reel. */
-export async function publishPost(kind: 'story' | 'reel' | 'album', file: File, caption: string, cfg: MediaConfig, onProgress: ProgressFn) {
+export async function publishPost(kind: 'story' | 'reel' | 'album', file: File, caption: string, cfg: MediaConfig, onProgress: ProgressFn, visibility?: 'public' | 'friends') {
   const isImage = file.type.startsWith('image/');
   const isAudio = file.type.startsWith('audio/');
   const isVideo = file.type.startsWith('video/');
@@ -108,7 +108,7 @@ export async function publishPost(kind: 'story' | 'reel' | 'album', file: File, 
   const { blob, mime } = await prepare(file, onProgress);
   const s = await api<SignResponse>('/api/media/sign', { kind, mime, size: blob.size });
   await uploadToStorage(s.uploadUrl, blob, mime, p => onProgress('uploading', p));
-  await api('/api/posts', { key: s.key, caption });
+  await api('/api/posts', { key: s.key, caption, visibility });
 }
 
 /** Publish a photo or video to the Kite Network. The server checks it for adult content before it appears. */
