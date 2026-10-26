@@ -7,6 +7,7 @@ import Avatar from './Avatar.tsx';
 import Chat from './Chat.tsx';
 import CallScreen from './CallScreen.tsx';
 import Feed from './Feed.tsx';
+import Network from './Network.tsx';
 import Profile from './Profile.tsx';
 import ProfileSettings from './ProfileSettings.tsx';
 import { downloadSharedFile, sendFileToFriend, type MediaConfig } from './media.ts';
@@ -73,7 +74,7 @@ function Root() {
         })
         .catch(e => {
           if (cancelled) return;
-          if (e instanceof ApiError && e.status === 401) {
+          if (e instanceof ApiError && (e.status === 401 || e.blocked)) {
             setToken(null);
             setBooting(false);
           } else if (++tries < 30) {
@@ -116,7 +117,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
   const [newFriendId, setNewFriendId] = useState('');
   const [addError, setAddError] = useState('');
   const [copied, setCopied] = useState(false);
-  const [tab, setTab] = useState<'chats' | 'feed' | 'profile'>('chats');
+  const [tab, setTab] = useState<'chats' | 'feed' | 'network' | 'profile'>('chats');
   const [menuOpen, setMenuOpen] = useState(false);
   const [broadcastOpen, setBroadcastOpen] = useState(false);
   const [broadcastText, setBroadcastText] = useState('');
@@ -147,7 +148,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
       setFriends(f.friends);
       setMessages(m.messages);
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401) onLogout();
+      if (e instanceof ApiError && (e.status === 401 || e.blocked)) onLogout();
     }
   }, [onLogout]);
 
@@ -301,7 +302,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
     }
   };
 
-  const goTo = (t: 'chats' | 'feed' | 'profile') => {
+  const goTo = (t: 'chats' | 'feed' | 'network' | 'profile') => {
     setTab(t);
     setMenuOpen(false);
   };
@@ -386,6 +387,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
                 )}
                 {filesEnabled && (
                   <>
+                    <button role="menuitem" onClick={() => goTo('network')} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">Kite 🪁 Network</button>
                     <button role="menuitem" onClick={() => goTo('feed')} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">Stories &amp; Reels</button>
                     <button role="menuitem" onClick={() => goTo('profile')} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">Profile Settings</button>
                   </>
@@ -405,7 +407,9 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
       </header>
 
       <main className="flex-1 flex min-h-0">
-        {tab === 'feed' ? (
+        {tab === 'network' ? (
+          <Network me={user} onBlocked={onLogout} />
+        ) : tab === 'feed' ? (
           <Feed me={user.userId} />
         ) : tab === 'profile' ? (
           <ProfileSettings key={user.userId} userId={user.userId} onChanged={u => onUserChange({ ...user, ...u })} />

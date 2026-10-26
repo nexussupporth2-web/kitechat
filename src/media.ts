@@ -111,6 +111,21 @@ export async function publishPost(kind: 'story' | 'reel' | 'album', file: File, 
   await api('/api/posts', { key: s.key, caption });
 }
 
+/** Publish a photo or video to the Kite Network. The server checks it for adult content before it appears. */
+export async function publishNetwork(file: File, caption: string, visibility: 'public' | 'friends', onProgress: ProgressFn) {
+  const isVideo = file.type.startsWith('video/');
+  if (!file.type.startsWith('image/') && !isVideo) throw new Error('Choose a photo or a video');
+  if (file.size > 100 * 1024 * 1024) throw new Error('This file is too large (limit 100 MB).');
+  if (isVideo) {
+    const dur = await mediaDuration(file);
+    if (dur > 30.5) throw new Error('Videos can be up to 30 seconds.');
+  }
+  const { blob, mime } = await prepare(file, onProgress);
+  const s = await api<SignResponse>('/api/media/sign', { kind: 'network', mime, size: blob.size });
+  await uploadToStorage(s.uploadUrl, blob, mime, p => onProgress('uploading', p));
+  await api('/api/network/posts', { key: s.key, caption, visibility });
+}
+
 export async function loadFeed() {
   return api<{ posts: FeedPost[]; usedBytes: number; quotaBytes: number }>('/api/feed');
 }

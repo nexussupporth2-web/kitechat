@@ -26,9 +26,12 @@ export function getToken() {
 
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  /** True when the account was blocked by the adult-content rule. */
+  blocked: boolean;
+  constructor(message: string, status: number, blocked = false) {
     super(message);
     this.status = status;
+    this.blocked = blocked;
   }
 }
 
@@ -63,6 +66,6 @@ export async function api<T>(path: string, body?: unknown, method?: 'DELETE' | '
     throw new ApiError('Network error connecting to server', 0);
   }
   const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(json.error || `Server error (${res.status}). Please try again.`, res.status);
+  if (!res.ok) throw new ApiError(json.error || `Server error (${res.status}). Please try again.`, res.status, !!json.blocked);
   return json as T;
 }

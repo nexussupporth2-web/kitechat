@@ -10,10 +10,15 @@ export default function Auth({ onAuthed }: { onAuthed: (user: User) => void }) {
   const [name, setName] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [blocked, setBlocked] = useState(false);
+  const [appeal, setAppeal] = useState('');
+  const [appealNote, setAppealNote] = useState('');
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setBlocked(false);
+    setAppealNote('');
     setBusy(true);
     try {
       const body = view === 'register' ? { userId, password, name } : { userId, password };
@@ -22,6 +27,21 @@ export default function Auth({ onAuthed }: { onAuthed: (user: User) => void }) {
       onAuthed(res.user);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Something went wrong');
+      if (err instanceof ApiError && err.blocked) setBlocked(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const sendAppeal = async () => {
+    setBusy(true);
+    setAppealNote('');
+    try {
+      await api('/api/appeal', { userId, password, message: appeal });
+      setAppealNote('Your appeal was sent. The admin will look at it.');
+      setAppeal('');
+    } catch (err) {
+      setAppealNote(err instanceof ApiError ? err.message : 'Could not send the appeal');
     } finally {
       setBusy(false);
     }
@@ -51,6 +71,16 @@ export default function Auth({ onAuthed }: { onAuthed: (user: User) => void }) {
         {error && (
           <div role="alert" className="mb-4 p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-400 text-xs text-center">
             {error}
+          </div>
+        )}
+
+        {blocked && (
+          <div className="mb-4 space-y-2">
+            <textarea className={`${input} resize-none`} rows={3} maxLength={500} value={appeal} onChange={e => setAppeal(e.target.value)} placeholder="Appeal: tell the admin why this was a mistake" />
+            <button type="button" onClick={sendAppeal} disabled={busy || !appeal.trim()} className="w-full h-10 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-60 text-white text-sm font-medium">
+              Send appeal
+            </button>
+            {appealNote && <p role="status" className="text-xs text-cyan-400 text-center">{appealNote}</p>}
           </div>
         )}
 
