@@ -26,7 +26,10 @@ app.use(express.json({ limit: '10kb' }));
 
 // ---------- helpers ----------
 
-const publicUser = (u: User) => ({ userId: u.userId, name: u.name, avatar: u.avatar });
+/** The admin account. Everyone is automatically friends with it, and it can send broadcasts. */
+const ADMIN_ID = (process.env.ADMIN_ID || 'KITE_ADMIN').trim().toUpperCase();
+
+const publicUser = (u: User) => ({ userId: u.userId, name: u.name, avatar: u.avatar, isAdmin: u.userId === ADMIN_ID });
 
 /** userId -> set of connected socket ids (a user may have several tabs/devices). */
 const online = new Map<string, Set<string>>();
@@ -35,6 +38,25 @@ const isOnline = (id: string) => (online.get(id)?.size ?? 0) > 0;
 const photoUrlOf = async (u: User): Promise<string | null> =>
   r2Enabled && u.photo ? await signGet(u.photo.key, { expiresIn: 3600 }).catch(() => null) : null;
 const friendView = (u: User) => ({ ...publicUser(u), isOnline: isOnline(u.userId) });
+/** Makes the admin a friend of every user (and the other way round). Safe to run again and again. */
+function syncAdminFriends(): boolean {
+  const admin = data.users[ADMIN_ID];
+  if (!admin) return false;
+  let changed = false;
+  for (const u of Object.values(data.users)) {
+    if (u.userId === admin.userId) continue;
+    if (!u.friends.includes(admin.userId)) {
+      u.friends.push(admin.userId);
+      changed = true;
+    }
+    if (!admin.friends.includes(u.userId)) {
+      admin.friends.push(u.userId);
+      changed = true;
+    }
+  }
+  if (changed) save();
+  return changed;
+}
 const areFriends = (a: string, b: string) => !!data.users[a]?.friends.includes(b);
 
 const buckets = new Map<string, { count: number; reset: number }>();
@@ -98,7 +120,10 @@ app.post('/api/register', rateLimit(10, 60_000), (req, res) => {
     createdAt: Date.now()
   };
   data.users[id] = user;
+  syncAdminFriends();
   save();
+  // The admin's list updates live when someone new joins.
+  if (id !== ADMIN_ID && data.users[ADMIN_ID]) io.to(`user:${ADMIN_ID}`).emit('friend-added', friendView(user));
   res.json({ token: signToken(id), user: publicUser(user) });
 });
 
@@ -172,6 +197,34 @@ app.post('/api/push/unsubscribe', requireAuth, (req, res) => {
     save();
   }
   res.json({ ok: true });
+});
+
+/** Admin only: send one message to everyone. It appears in each person's chat with the admin. */
+app.post('/api/broadcast', requireAuth, rateLimit(20, 60_000), (req, res) => {
+  const me = res.locals.user as User;
+  if (me.userId !== ADMIN_ID) return res.status(403).json({ error: 'Only the admin can send broadcasts' });
+  const text = typeof req.body?.message === 'string' ? req.body.message.trim().slice(0, 2000) : '';
+  if (!text) return res.status(400).json({ error: 'Write a message first' });
+  syncAdminFriends();
+  let sent = 0;
+  for (const u of Object.values(data.users)) {
+    if (u.userId === me.userId) continue;
+    const msg: Message = {
+      id: crypto.randomUUID(),
+      senderId: me.userId,
+      recipientId: u.userId,
+      message: text,
+      timestamp: Date.now(),
+      status: isOnline(u.userId) ? 'received' : 'sent',
+      reactions: {},
+      broadcast: true
+    };
+    addMessage(msg);
+    io.to(`user:${u.userId}`).to(`user:${me.userId}`).emit('chat-message', msg);
+    if (!isOnline(u.userId)) void sendPush(u, { kind: 'message', title: 'KiteChat', body: 'You have a message', tag: `msg-${me.userId}` });
+    sent++;
+  }
+  res.json({ sent });
 });
 
 app.get('/api/messages', requireAuth, (_req, res) => {
@@ -409,7 +462,7 @@ io.on('connection', socket => {
       leaveRoom(socket);
       const room = io.sockets.adapter.rooms.get(roomId);
       if (room && room.size >= 2) return reply({ ok: false, error: 'Call is full' });
-      const peers = room ? Array.from(room) : [];
+      const peers = room ? (Array.from(room) as string[]) : [];
       socket.join(roomId);
       socket.data.roomId = roomId;
       userRoom.set(userId, roomId);
@@ -444,6 +497,7 @@ io.on('connection', socket => {
 
 async function start() {
   await initStore();
+  syncAdminFriends(); // everyone who joined before gets the admin as a friend too
   app.use('/api', mediaRouter({
       io,
       requireAuth,
