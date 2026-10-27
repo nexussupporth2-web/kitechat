@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Download, FileText, Image as ImageIcon, MessageSquare, Paperclip, Phone, Video, X } from 'lucide-react';
+import { ArrowLeft, Download, FileText, Image as ImageIcon, MessageSquare, Paperclip, Phone, Pin, Video, X } from 'lucide-react';
 import Avatar from './Avatar.tsx';
 import KiteIcon from './KiteIcon.tsx';
 import { formatBytes } from './api.ts';
@@ -21,6 +21,8 @@ interface Props {
   onSend: (text: string) => void;
   onTyping: (isTyping: boolean) => void;
   onReact: (messageId: string, emoji: string) => void;
+  /** Pin or unpin a message. Returns an error text, or null when it worked. */
+  onPin: (messageId: string, pinned: boolean) => Promise<string | null>;
   onCall: (type: 'audio' | 'video') => void;
   onBack: () => void;
   onOpenProfile: () => void;
@@ -29,7 +31,7 @@ interface Props {
   onResetWallpaper: () => Promise<void>;
 }
 
-export default function Chat({ me, friend, messages, friendTyping, callDisabled, callHint, filesEnabled, onSendFile, onDownload, onSend, onTyping, onReact, onCall, onBack, onOpenProfile, wallpaperUrl, onSetWallpaper, onResetWallpaper }: Props) {
+export default function Chat({ me, friend, messages, friendTyping, callDisabled, callHint, filesEnabled, onSendFile, onDownload, onSend, onTyping, onReact, onPin, onCall, onBack, onOpenProfile, wallpaperUrl, onSetWallpaper, onResetWallpaper }: Props) {
   const [input, setInput] = useState('');
   const [progress, setProgress] = useState<{ phase: Phase; p: number } | null>(null);
   const [fileError, setFileError] = useState('');
@@ -96,6 +98,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
     }
   };
   const [pickerFor, setPickerFor] = useState<string | null>(null);
+  const [pinNote, setPinNote] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -103,6 +106,8 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
     () => messages.filter(m => m.senderId === friend.userId || m.recipientId === friend.userId),
     [messages, friend.userId]
   );
+
+  const pinned = useMemo(() => convo.filter(m => m.pinned).slice(-3), [convo]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -178,6 +183,22 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
         </div>
       </div>
 
+      {(pinned.length > 0 || pinNote) && (
+        <div className="shrink-0 border-b border-slate-800 bg-slate-900/80 px-4 py-2 space-y-1">
+          {pinned.map(m => (
+            <button
+              key={m.id}
+              onClick={() => document.getElementById(`msg-${m.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+              className="w-full flex items-center gap-2 text-left text-xs text-slate-200"
+            >
+              <Pin className="w-3.5 h-3.5 shrink-0 text-cyan-400" />
+              <span className="truncate">{m.file ? `File: ${m.file.name}` : m.message}</span>
+            </button>
+          ))}
+          {pinNote && <p role="status" className="text-[11px] text-amber-300">{pinNote}</p>}
+        </div>
+      )}
+
       <div
         className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-3 chat-wallpaper"
         style={{
@@ -197,7 +218,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
             const reactions = Object.values(msg.reactions ?? {});
             const myReaction = msg.reactions?.[me];
             return (
-              <div key={msg.id} className={`flex flex-col ${mine ? 'items-end' : 'items-start'}`}>
+              <div key={msg.id} id={`msg-${msg.id}`} className={`flex flex-col ${mine ? 'items-end' : 'items-start'}`}>
                 <div className="relative max-w-[85%] sm:max-w-md">
                   <div
                     onClick={e => {
@@ -251,6 +272,17 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
                       className={`absolute -top-9 ${mine ? 'right-0' : 'left-0'} flex items-center gap-1 bg-slate-900 border border-slate-700 px-2 py-1 rounded-full shadow-lg z-10`}
                       onClick={e => e.stopPropagation()}
                     >
+                      <button
+                        onClick={async () => {
+                          setPickerFor(null);
+                          setPinNote((await onPin(msg.id, !msg.pinned)) ?? '');
+                        }}
+                        className={`p-1 rounded ${msg.pinned ? 'bg-slate-700 text-cyan-400' : 'text-slate-300'}`}
+                        title={msg.pinned ? 'Unpin message' : 'Pin message'}
+                        aria-label={msg.pinned ? 'Unpin message' : 'Pin message'}
+                      >
+                        <Pin className="w-4 h-4" />
+                      </button>
                       {EMOJIS.map(emoji => (
                         <button
                           key={emoji}

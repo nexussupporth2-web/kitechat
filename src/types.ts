@@ -12,6 +12,8 @@ export interface User {
 
 export interface Friend extends User {
   isOnline: boolean;
+  /** Position among the chats this person pinned (0 to 2), or -1 when not pinned. */
+  pinOrder?: number;
 }
 
 export interface ChatMessage {
@@ -24,6 +26,7 @@ export interface ChatMessage {
   reactions: Record<string, string>;
   file?: { id: string; name: string; size: number; gone: boolean; permanent?: boolean };
   broadcast?: boolean;
+  pinned?: boolean;
 }
 
 export interface FeedPost {

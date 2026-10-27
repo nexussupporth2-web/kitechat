@@ -1,6 +1,6 @@
 import { Component, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { io, type Socket } from 'socket.io-client';
-import { Bell, Check, ChevronRight, Copy, LogOut, MoreVertical, Phone, Sparkles, UserPlus, Users, Video, X } from 'lucide-react';
+import { Bell, Check, ChevronRight, Copy, LogOut, MoreVertical, Phone, Pin, Sparkles, UserPlus, Users, Video, X } from 'lucide-react';
 import { api, ApiError, getToken, loadToken, setToken } from './api.ts';
 import Auth from './Auth.tsx';
 import Avatar from './Avatar.tsx';
@@ -120,6 +120,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
   const [tab, setTab] = useState<'chats' | 'feed' | 'network' | 'profile'>('chats');
   const [menuOpen, setMenuOpen] = useState(false);
   const [broadcastOpen, setBroadcastOpen] = useState(false);
+  const [listNote, setListNote] = useState('');
   const [moderationOpen, setModerationOpen] = useState(false);
   const [broadcastText, setBroadcastText] = useState('');
   const [broadcastBusy, setBroadcastBusy] = useState(false);
@@ -311,6 +312,28 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
     }
   };
 
+  /** Pin or unpin a chat. Up to 3 chats stay at the top of the list. */
+  const pinChat = async (f: Friend) => {
+    const pin = !(f.pinOrder != null && f.pinOrder >= 0);
+    setListNote('');
+    try {
+      await api('/api/chats/pin', { friendId: f.userId, pinned: pin });
+      await loadData();
+    } catch (err) {
+      setListNote(err instanceof ApiError ? err.message : 'Could not pin this chat');
+      setTimeout(() => setListNote(''), 4000);
+    }
+  };
+
+  const pinMessage = async (messageId: string, pinned: boolean): Promise<string | null> => {
+    try {
+      await api(`/api/messages/${messageId}/pin`, { pinned });
+      return null;
+    } catch (err) {
+      return err instanceof ApiError ? err.message : 'Could not pin this message';
+    }
+  };
+
   const goTo = (t: 'chats' | 'feed' | 'network' | 'profile') => {
     setTab(t);
     setMenuOpen(false);
@@ -438,41 +461,77 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
             </button>
           </div>
           <div className="flex-1 overflow-y-auto p-2 space-y-1">
+            {listNote && <p role="status" className="px-3 py-2 text-xs text-amber-300">{listNote}</p>}
+            {user.isAdmin && (
+              <button
+                onClick={() => { setBroadcastNote(''); setBroadcastOpen(true); }}
+                className="w-full text-left flex items-center justify-between p-3 rounded-2xl border border-cyan-500/30 bg-cyan-500/5 hover:bg-cyan-500/10"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <Avatar avatar="📢" className="w-10 h-10 text-lg" />
+                  <div className="min-w-0">
+                    <h4 className="text-sm font-semibold text-white truncate">
+                      System Broadcast
+                      <span className="ml-2 align-middle px-1.5 py-0.5 rounded-md bg-cyan-500/20 text-cyan-400 text-[10px] font-semibold">Official</span>
+                    </h4>
+                    <span className="text-[11px] text-slate-400">Tap to send an update to everyone</span>
+                  </div>
+                </div>
+                <ChevronRight className="w-4 h-4 text-slate-500" />
+              </button>
+            )}
             {friends.length === 0 ? (
               <div className="text-center py-12 px-4 text-slate-500">
                 <Users className="w-10 h-10 mx-auto mb-2 opacity-30" />
                 <p className="text-xs">No friends yet. Tap Add and enter their User ID.</p>
               </div>
             ) : (
-              [...friends].sort((a, b) => Number(!!b.isAdmin) - Number(!!a.isAdmin)).map(f => {
+              [...friends]
+                // System Broadcast first, then the chats this person pinned, then everyone else.
+                .sort((a, b) => Number(!!b.isAdmin) - Number(!!a.isAdmin) || (a.pinOrder != null && a.pinOrder >= 0 ? a.pinOrder : 99) - (b.pinOrder != null && b.pinOrder >= 0 ? b.pinOrder : 99))
+                .map(f => {
                 const n = unread(f.userId);
+                const isPinned = f.pinOrder != null && f.pinOrder >= 0;
                 return (
-                  <button
+                  <div
                     key={f.userId}
-                    onClick={() => selectFriend(f)}
-                    className={`w-full text-left flex items-center justify-between p-3 rounded-2xl transition-colors ${
+                    className={`w-full flex items-center gap-1 rounded-2xl transition-colors ${
                       selectedId === f.userId ? 'bg-slate-800 border border-slate-700' : 'hover:bg-slate-800/50 border border-transparent'
                     }`}
                   >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="relative shrink-0">
-                        <Avatar avatar={f.avatar} photoUrl={f.photoUrl} />
-                        <span className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-slate-900 ${f.isOnline ? 'bg-emerald-500' : 'bg-slate-600'}`} />
+                    <button onClick={() => selectFriend(f)} className="flex-1 min-w-0 text-left flex items-center justify-between p-3">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="relative shrink-0">
+                          <Avatar avatar={f.avatar} photoUrl={f.photoUrl} />
+                          <span className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-slate-900 ${f.isOnline ? 'bg-emerald-500' : 'bg-slate-600'}`} />
+                        </div>
+                        <div className="min-w-0">
+                          <h4 className="text-sm font-semibold text-white truncate">
+                            {f.name}
+                            {f.isAdmin && <span className="ml-2 align-middle px-1.5 py-0.5 rounded-md bg-cyan-500/20 text-cyan-400 text-[10px] font-semibold">Official</span>}
+                          </h4>
+                          <span className="text-[10px] font-mono text-cyan-400">{f.isAdmin ? 'Updates from Kite' : f.userId}</span>
+                        </div>
                       </div>
-                      <div className="min-w-0">
-                        <h4 className="text-sm font-semibold text-white truncate">
-                          {f.name}
-                          {f.isAdmin && <span className="ml-2 align-middle px-1.5 py-0.5 rounded-md bg-cyan-500/20 text-cyan-400 text-[10px] font-semibold">Official</span>}
-                        </h4>
-                        <span className="text-[10px] font-mono text-cyan-400">{f.userId}</span>
-                      </div>
-                    </div>
-                    {n > 0 ? (
-                      <span className="min-w-5 h-5 px-1.5 rounded-full bg-emerald-500 text-accent-ink text-[11px] font-bold flex items-center justify-center">{n}</span>
+                      {n > 0 ? (
+                        <span className="min-w-5 h-5 px-1.5 rounded-full bg-emerald-500 text-accent-ink text-[11px] font-bold flex items-center justify-center">{n}</span>
+                      ) : (
+                        <ChevronRight className="w-4 h-4 text-slate-500" />
+                      )}
+                    </button>
+                    {f.isAdmin ? (
+                      <span className="w-10 shrink-0" />
                     ) : (
-                      <ChevronRight className="w-4 h-4 text-slate-500" />
+                      <button
+                        onClick={() => void pinChat(f)}
+                        className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center ${isPinned ? 'text-cyan-400' : 'text-slate-600 hover:text-slate-300'}`}
+                        title={isPinned ? 'Unpin chat' : 'Pin chat to the top'}
+                        aria-label={isPinned ? 'Unpin chat' : 'Pin chat to the top'}
+                      >
+                        <Pin className={`w-4 h-4 ${isPinned ? 'fill-current' : ''}`} />
+                      </button>
                     )}
-                  </button>
+                  </div>
                 );
               })
             )}
@@ -498,6 +557,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
               onSend={text => socket?.emit('chat-message', { recipientId: selected.userId, message: text })}
               onTyping={isTyping => socket?.emit('typing', { recipientId: selected.userId, isTyping })}
               onReact={(messageId, reaction) => socket?.emit('message-reaction', { messageId, reaction })}
+              onPin={pinMessage}
               onCall={type => calls.startCall(selected, type)}
               onBack={() => setSelectedId(null)}
               onOpenProfile={() => setProfileFor(selected.userId)}
