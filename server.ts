@@ -213,7 +213,7 @@ app.get('/api/friends', requireAuth, async (_req, res) => {
         // To everyone except the admin, the admin account is shown as the "System Broadcast" channel.
         u.userId === ADMIN_ID && me.userId !== ADMIN_ID
           ? { ...friendView(u), name: 'System Broadcast', avatar: '📢', photoUrl: null }
-          : { ...friendView(u), photoUrl: await photoUrlOf(u) }
+          : { ...friendView(u), photoUrl: await photoUrlOf(u), pinOrder: (me.pinnedChats ?? []).indexOf(u.userId) }
       )
     )
   });
@@ -319,6 +319,38 @@ app.get('/api/broadcast/file/:id', requireAuth, async (req, res) => {
   } catch {
     res.status(500).json({ error: 'Could not prepare the download' });
   }
+});
+
+/** Pin or unpin a chat in your own list. Up to 3 chats. System Broadcast is always on top and cannot be pinned. */
+app.post('/api/chats/pin', requireAuth, (req, res) => {
+  const me = res.locals.user as User;
+  const { friendId, pinned } = req.body ?? {};
+  if (typeof friendId !== 'string' || !areFriends(me.userId, friendId) || friendId === ADMIN_ID) return res.status(400).json({ error: 'Invalid chat' });
+  const list = (me.pinnedChats ?? []).filter(id => id !== friendId);
+  if (pinned) {
+    if (list.length >= 3) return res.status(400).json({ error: 'You can pin up to 3 chats. Unpin one first.' });
+    list.push(friendId);
+  }
+  me.pinnedChats = list;
+  save();
+  res.json({ ok: true });
+});
+
+/** Pin or unpin a message. Up to 3 pinned messages in each chat; both people see them. */
+app.post('/api/messages/:id/pin', requireAuth, (req, res) => {
+  const me = res.locals.user as User;
+  const m = messageIndex.get(String(req.params.id));
+  if (!m || (m.senderId !== me.userId && m.recipientId !== me.userId)) return res.status(404).json({ error: 'Not found' });
+  const pin = !!req.body?.pinned;
+  if (pin && !m.pinned) {
+    const same = (x: Message) => (x.senderId === m.senderId && x.recipientId === m.recipientId) || (x.senderId === m.recipientId && x.recipientId === m.senderId);
+    if (data.messages.filter(x => x.pinned && same(x)).length >= 3) return res.status(400).json({ error: 'You can pin up to 3 messages in a chat. Unpin one first.' });
+  }
+  if (pin) m.pinned = true;
+  else delete m.pinned;
+  save();
+  io.to(`user:${m.senderId}`).to(`user:${m.recipientId}`).emit('message-updated', m);
+  res.json({ ok: true });
 });
 
 app.get('/api/messages', requireAuth, (_req, res) => {
