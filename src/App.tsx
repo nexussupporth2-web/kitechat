@@ -10,7 +10,7 @@ import Feed from './Feed.tsx';
 import Network, { Moderation } from './Network.tsx';
 import Profile from './Profile.tsx';
 import ProfileSettings from './ProfileSettings.tsx';
-import { downloadSharedFile, sendFileToFriend, type MediaConfig } from './media.ts';
+import { downloadSharedFile, sendFileToFriend, uploadBroadcastFile, type MediaConfig } from './media.ts';
 import { enableNotifications, notificationState, notify, playMessageSound, registerSW, startRinging, stopRinging, subscribePush, unlockAudioOnFirstTap } from './notify.ts';
 import { useCall } from './useCall.ts';
 import { DEFAULT_WALLPAPER, loadChatWallpaper, resetMyWallpaper, setMyWallpaper } from './wallpaper.ts';
@@ -124,6 +124,8 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
   const [broadcastText, setBroadcastText] = useState('');
   const [broadcastBusy, setBroadcastBusy] = useState(false);
   const [broadcastNote, setBroadcastNote] = useState('');
+  const [broadcastFile, setBroadcastFile] = useState<File | null>(null);
+  const broadcastFileRef = useRef<HTMLInputElement>(null);
   const [profileFor, setProfileFor] = useState<string | null>(null);
   const [mediaCfg, setMediaCfg] = useState<MediaConfig | null>(null);
   const [connected, setConnected] = useState(true);
@@ -288,16 +290,22 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
   const sendBroadcast = async (e: React.FormEvent) => {
     e.preventDefault();
     const text = broadcastText.trim();
-    if (!text || broadcastBusy) return;
-    if (!window.confirm('Send this message to everyone?')) return;
+    if ((!text && !broadcastFile) || broadcastBusy) return;
+    if (!window.confirm('Send this to everyone?')) return;
     setBroadcastBusy(true);
     setBroadcastNote('');
     try {
-      const r = await api<{ sent: number }>('/api/broadcast', { message: text });
+      let file: { key: string; name: string } | undefined;
+      if (broadcastFile) {
+        setBroadcastNote('Uploading the attachment…');
+        file = await uploadBroadcastFile(broadcastFile, () => {});
+      }
+      const r = await api<{ sent: number }>('/api/broadcast', { message: text, file });
       setBroadcastText('');
+      setBroadcastFile(null);
       setBroadcastNote(`Sent to ${r.sent} ${r.sent === 1 ? 'person' : 'people'}.`);
     } catch (err) {
-      setBroadcastNote(err instanceof ApiError ? err.message : 'Could not send the broadcast');
+      setBroadcastNote(err instanceof Error ? err.message : 'Could not send the broadcast');
     } finally {
       setBroadcastBusy(false);
     }
@@ -395,7 +403,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
                 )}
                 {user.isAdmin && (
                   <button role="menuitem" onClick={() => { setMenuOpen(false); setBroadcastNote(''); setBroadcastOpen(true); }} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">
-                    📢 Send broadcast
+                    📢 System Broadcast
                   </button>
                 )}
                 {user.isAdmin && (
@@ -454,7 +462,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
                       <div className="min-w-0">
                         <h4 className="text-sm font-semibold text-white truncate">
                           {f.name}
-                          {f.isAdmin && <span className="ml-2 align-middle px-1.5 py-0.5 rounded-md bg-cyan-500/20 text-cyan-400 text-[10px] font-semibold">Admin</span>}
+                          {f.isAdmin && <span className="ml-2 align-middle px-1.5 py-0.5 rounded-md bg-cyan-500/20 text-cyan-400 text-[10px] font-semibold">Official</span>}
                         </h4>
                         <span className="text-[10px] font-mono text-cyan-400">{f.userId}</span>
                       </div>
@@ -541,7 +549,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
 
       {broadcastOpen && (
         <Modal onClose={() => !broadcastBusy && setBroadcastOpen(false)}>
-          <h3 className="text-lg font-bold text-white mb-1">📢 Broadcast</h3>
+          <h3 className="text-lg font-bold text-white mb-1">📢 System Broadcast</h3>
           <p className="text-xs text-slate-400 mb-4">This message goes to everyone's chat with you, as a normal message marked “Broadcast”.</p>
           <form onSubmit={sendBroadcast} className="space-y-3">
             <textarea
@@ -553,8 +561,20 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
               className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-cyan-500 resize-none"
             />
             <div className="text-[11px] text-slate-500 text-right">{broadcastText.length}/2000</div>
+            <input ref={broadcastFileRef} type="file" className="hidden" onChange={e => { setBroadcastFile(e.target.files?.[0] ?? null); e.target.value = ''; }} />
+            <div className="flex items-center gap-3">
+              <button type="button" onClick={() => broadcastFileRef.current?.click()} disabled={broadcastBusy} className="px-3 py-2 rounded-xl bg-slate-800 text-sm text-slate-200">
+                {broadcastFile ? 'Change attachment' : 'Attach a file'}
+              </button>
+              {broadcastFile && (
+                <span className="min-w-0 flex-1 flex items-center gap-2 text-xs text-slate-300">
+                  <span className="truncate">{broadcastFile.name}</span>
+                  <button type="button" onClick={() => setBroadcastFile(null)} disabled={broadcastBusy} className="text-rose-400">Remove</button>
+                </span>
+              )}
+            </div>
             {broadcastNote && <p role="status" className="text-xs text-cyan-400">{broadcastNote}</p>}
-            <button type="submit" disabled={broadcastBusy || !broadcastText.trim()} className="w-full h-11 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-accent-ink font-semibold rounded-xl text-sm">
+            <button type="submit" disabled={broadcastBusy || (!broadcastText.trim() && !broadcastFile)} className="w-full h-11 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-accent-ink font-semibold rounded-xl text-sm">
               {broadcastBusy ? 'Sending…' : 'Send to everyone'}
             </button>
           </form>

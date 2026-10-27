@@ -165,12 +165,16 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
           <button onClick={() => { setWallError(''); setWallOpen(true); }} className="w-10 h-10 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center border border-slate-700" title="Chat wallpaper" aria-label="Chat wallpaper">
             <ImageIcon className="w-4 h-4" />
           </button>
-          <button onClick={() => onCall('audio')} disabled={callDisabled} className={iconBtn} title={callHint || 'Audio call'}>
-            <Phone className="w-4 h-4" />
-          </button>
-          <button onClick={() => onCall('video')} disabled={callDisabled} className={iconBtn} title={callHint || 'Video call'}>
-            <Video className="w-4 h-4" />
-          </button>
+          {!friend.isAdmin && (
+            <>
+              <button onClick={() => onCall('audio')} disabled={callDisabled} className={iconBtn} title={callHint || 'Audio call'}>
+                <Phone className="w-4 h-4" />
+              </button>
+              <button onClick={() => onCall('video')} disabled={callDisabled} className={iconBtn} title={callHint || 'Video call'}>
+                <Video className="w-4 h-4" />
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -204,7 +208,8 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
                       mine ? 'bg-cyan-600 text-accent-ink rounded-br-sm' : 'bg-slate-900 border border-slate-800 text-slate-200 rounded-bl-sm'
                     }`}
                   >
-                    {msg.broadcast && <div className="text-[10px] font-semibold uppercase tracking-wider opacity-70 mb-1">📢 Broadcast</div>}
+                    {msg.broadcast && <div className="text-[10px] font-semibold uppercase tracking-wider opacity-70 mb-1">📢 System Broadcast</div>}
+                    {msg.file?.permanent && msg.message && <div className="mb-2 whitespace-pre-line break-words">{msg.message}</div>}
                     {msg.file ? (
                       <div className="flex items-center gap-3 min-w-[12rem]">
                         <FileText className="w-8 h-8 shrink-0 opacity-80" />
@@ -214,7 +219,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
                         </div>
                         {msg.file.gone ? (
                           <span className="text-[11px] opacity-70 shrink-0">{mine ? 'Delivered' : 'Deleted'}</span>
-                        ) : mine ? (
+                        ) : mine && !msg.file.permanent ? (
                           <span className="text-[11px] opacity-70 shrink-0">Waiting…</span>
                         ) : (
                           <button

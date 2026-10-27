@@ -22,7 +22,7 @@ export interface ChatMessage {
   timestamp: number;
   status: MsgStatus;
   reactions: Record<string, string>;
-  file?: { id: string; name: string; size: number; gone: boolean };
+  file?: { id: string; name: string; size: number; gone: boolean; permanent?: boolean };
   broadcast?: boolean;
 }
 

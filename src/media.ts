@@ -75,7 +75,9 @@ function extensionFor(mime: string, fallbackName: string) {
 
 /** Download a shared file, save it to the device, then tell the server to delete it from storage. */
 export async function downloadSharedFile(id: string) {
-  const { url, name } = await api<{ url: string; name: string }>(`/api/shares/${id}/url`);
+  // Broadcast attachments (id starts with "bc:") stay available, so nothing is deleted afterwards.
+  const permanent = id.startsWith('bc:');
+  const { url, name } = await api<{ url: string; name: string }>(permanent ? `/api/broadcast/file/${id.slice(3)}` : `/api/shares/${id}/url`);
   const res = await fetch(url);
   if (!res.ok) throw new Error('Download failed');
   const blob = await res.blob();
@@ -86,7 +88,16 @@ export async function downloadSharedFile(id: string) {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 60_000);
-  await api(`/api/shares/${id}/done`, {});
+  if (!permanent) await api(`/api/shares/${id}/done`, {});
+}
+
+/** Admin: upload a file to attach to a broadcast. Photos and videos are shrunk first. */
+export async function uploadBroadcastFile(file: File, onProgress: ProgressFn) {
+  if (file.size > 300 * 1024 * 1024) throw new Error('This file is too large.');
+  const { blob, mime } = await prepare(file, onProgress);
+  const s = await api<SignResponse>('/api/media/sign', { kind: 'broadcast', mime, size: blob.size });
+  await uploadToStorage(s.uploadUrl, blob, mime, p => onProgress('uploading', p));
+  return { key: s.key, name: file.name };
 }
 
 /** Validate, compress, upload and publish a story/status or reel. */
