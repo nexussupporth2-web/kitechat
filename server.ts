@@ -8,7 +8,7 @@ import { data, messageIndex, addMessage, messagesFor, save, flush, initStore, ty
 import { mediaRouter } from './server/media.ts';
 import { networkRouter } from './server/network.ts';
 import { blockedMessage } from './server/moderation.ts';
-import { r2Enabled, signGet } from './server/r2.ts';
+import { r2Enabled, signGet, head } from './server/r2.ts';
 import { canPush, pushEnabled, sendPush, vapidPublicKey } from './server/push.ts';
 import { hashPassword, verifyPassword, signToken, verifyToken } from './server/auth.ts';
 
@@ -79,8 +79,9 @@ function syncBroadcasts(): boolean {
     const have = new Set(sent.filter(m => m.recipientId === u.userId).map(m => m.broadcastId ?? m.message));
     for (const [key, original] of all) {
       if (have.has(key)) continue;
+      const newId = crypto.randomUUID();
       addMessage({
-        id: crypto.randomUUID(),
+        id: newId,
         senderId: ADMIN_ID,
         recipientId: u.userId,
         message: original.message,
@@ -88,7 +89,10 @@ function syncBroadcasts(): boolean {
         status: 'sent',
         reactions: {},
         broadcast: true,
-        broadcastId: original.broadcastId
+        broadcastId: original.broadcastId,
+        ...(original.bcKey && original.file
+          ? { bcKey: original.bcKey, bcMime: original.bcMime, file: { ...original.file, id: `bc:${newId}` } }
+          : {})
       });
       added = true;
     }
@@ -203,7 +207,16 @@ app.get('/api/me', requireAuth, async (_req, res) => {
 app.get('/api/friends', requireAuth, async (_req, res) => {
   const me = res.locals.user as User;
   const list = me.friends.map(id => data.users[id]).filter(Boolean);
-  res.json({ friends: await Promise.all(list.map(async u => ({ ...friendView(u), photoUrl: await photoUrlOf(u) }))) });
+  res.json({
+    friends: await Promise.all(
+      list.map(async u =>
+        // To everyone except the admin, the admin account is shown as the "System Broadcast" channel.
+        u.userId === ADMIN_ID && me.userId !== ADMIN_ID
+          ? { ...friendView(u), name: 'System Broadcast', avatar: '📢', photoUrl: null }
+          : { ...friendView(u), photoUrl: await photoUrlOf(u) }
+      )
+    )
+  });
 });
 
 app.post('/api/friends', requireAuth, async (req, res) => {
@@ -256,18 +269,28 @@ app.post('/api/push/unsubscribe', requireAuth, (req, res) => {
 });
 
 /** Admin only: send one message to everyone. It appears in each person's chat with the admin. */
-app.post('/api/broadcast', requireAuth, rateLimit(20, 60_000), (req, res) => {
+app.post('/api/broadcast', requireAuth, rateLimit(20, 60_000), async (req, res) => {
   const me = res.locals.user as User;
   if (me.userId !== ADMIN_ID) return res.status(403).json({ error: 'Only the admin can send broadcasts' });
   const text = typeof req.body?.message === 'string' ? req.body.message.trim().slice(0, 2000) : '';
-  if (!text) return res.status(400).json({ error: 'Write a message first' });
+  // Optional attachment, uploaded first with kind "broadcast". Everyone gets the same file; it is kept in storage.
+  let attach: { key: string; name: string; size: number; mime: string } | null = null;
+  const f = req.body?.file;
+  if (f) {
+    if (!r2Enabled || typeof f.key !== 'string' || !f.key.startsWith('broadcast/')) return res.status(400).json({ error: 'Invalid attachment' });
+    const info = await head(f.key).catch(() => null);
+    if (!info) return res.status(400).json({ error: 'Attachment not found. Please try again.' });
+    attach = { key: f.key, name: String(f.name ?? 'file').replace(/[\\/\0\r\n"]/g, '_').trim().slice(0, 120) || 'file', size: info.size, mime: info.type };
+  }
+  if (!text && !attach) return res.status(400).json({ error: 'Write a message or attach a file first' });
   syncAdminFriends();
   const broadcastId = crypto.randomUUID();
   let sent = 0;
   for (const u of Object.values(data.users)) {
     if (u.userId === me.userId) continue;
+    const id = crypto.randomUUID();
     const msg: Message = {
-      id: crypto.randomUUID(),
+      id,
       senderId: me.userId,
       recipientId: u.userId,
       message: text,
@@ -275,7 +298,8 @@ app.post('/api/broadcast', requireAuth, rateLimit(20, 60_000), (req, res) => {
       status: isOnline(u.userId) ? 'received' : 'sent',
       reactions: {},
       broadcast: true,
-      broadcastId
+      broadcastId,
+      ...(attach ? { file: { id: `bc:${id}`, name: attach.name, size: attach.size, gone: false, permanent: true }, bcKey: attach.key, bcMime: attach.mime } : {})
     };
     addMessage(msg);
     io.to(`user:${u.userId}`).to(`user:${me.userId}`).emit('chat-message', msg);
@@ -283,6 +307,18 @@ app.post('/api/broadcast', requireAuth, rateLimit(20, 60_000), (req, res) => {
     sent++;
   }
   res.json({ sent });
+});
+
+/** Download link for a broadcast attachment. Anyone in that chat may open it; it is not deleted afterwards. */
+app.get('/api/broadcast/file/:id', requireAuth, async (req, res) => {
+  const me = res.locals.user as User;
+  const m = messageIndex.get(String(req.params.id));
+  if (!m || !m.bcKey || !m.file || (m.senderId !== me.userId && m.recipientId !== me.userId)) return res.status(404).json({ error: 'Not found' });
+  try {
+    res.json({ url: await signGet(m.bcKey, { expiresIn: 600, downloadName: m.file.name }), name: m.file.name });
+  } catch {
+    res.status(500).json({ error: 'Could not prepare the download' });
+  }
 });
 
 app.get('/api/messages', requireAuth, (_req, res) => {
@@ -453,6 +489,7 @@ io.on('connection', socket => {
         return reply({ ok: false, error: 'Invalid call' });
       }
       if (!areFriends(userId, recipientId)) return reply({ ok: false, error: 'Not a friend' });
+      if (recipientId === ADMIN_ID) return reply({ ok: false, error: 'Calls are not available in System Broadcast' });
       const calleeOnline = isOnline(recipientId);
       if (!calleeOnline && !canPush(data.users[recipientId])) {
         return reply({ ok: false, error: `${data.users[recipientId].name} is offline and has not turned on notifications yet` });
