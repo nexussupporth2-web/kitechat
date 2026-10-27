@@ -62,6 +62,8 @@ export interface User {
   appeal?: { at: number; message: string };
   /** People whose Network posts this user chose not to see. */
   hidden?: string[];
+  /** Chats this user pinned to the top of their chat list (up to 3, in pin order). */
+  pinnedChats?: string[];
   /** Devices that allowed notifications (so a closed app can still be told about a message or call). */
   pushSubs?: { endpoint: string; keys: { p256dh: string; auth: string } }[];
 }
@@ -94,6 +96,8 @@ export interface Message {
   /** Storage key and type of a broadcast attachment. */
   bcKey?: string;
   bcMime?: string;
+  /** Pinned to the top of the chat (up to 3 per chat). */
+  pinned?: boolean;
 }
 
 export interface Post {
