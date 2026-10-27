@@ -74,6 +74,8 @@ export interface FileInfo {
   size: number;
   /** True once the file has been downloaded (and deleted) or has expired. */
   gone: boolean;
+  /** Broadcast attachments stay available (they are not deleted after one download). */
+  permanent?: boolean;
 }
 
 export interface Message {
@@ -89,6 +91,9 @@ export interface Message {
   broadcast?: boolean;
   /** Same value on every copy of one broadcast. */
   broadcastId?: string;
+  /** Storage key and type of a broadcast attachment. */
+  bcKey?: string;
+  bcMime?: string;
 }
 
 export interface Post {

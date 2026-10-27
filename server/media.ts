@@ -141,6 +141,10 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
       if (!ext) return res.status(400).json({ error: 'Wallpaper must be a JPG, PNG or WebP photo' });
       if (size > LIMITS.wallpaperBytes) return res.status(400).json({ error: 'Wallpaper is too large even after compression' });
       key = `wallpapers/${me.userId}/${crypto.randomUUID()}.${ext}`;
+    } else if (kind === 'broadcast') {
+      if (me.userId !== (process.env.ADMIN_ID || 'KITE_ADMIN').trim().toUpperCase()) return res.status(403).json({ error: 'Only the admin can attach files to a broadcast' });
+      if (size > LIMITS.share.bytes) return res.status(400).json({ error: `Too large. Attachments can be up to ${LIMITS.share.bytes / MB} MB` });
+      key = `broadcast/${crypto.randomUUID()}`;
     } else if (kind === 'share') {
       if (typeof recipientId !== 'string' || !areFriends(me.userId, recipientId)) {
         return res.status(400).json({ error: 'You can only send files to friends' });
