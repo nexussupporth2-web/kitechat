@@ -1,5 +1,5 @@
 import { Component, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { io, type Socket } from 'socket.io-client';
+import { KiteSocket } from './socket';
 import { Bell, Check, ChevronRight, Copy, LogOut, MoreVertical, Phone, Pin, Sparkles, UserPlus, Users, Video, X } from 'lucide-react';
 import { api, ApiError, getToken, loadToken, setToken } from './api.ts';
 import Auth from './Auth.tsx';
@@ -107,7 +107,7 @@ function Root() {
 }
 
 function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () => void; onUserChange: (u: User) => void }) {
-  const [socket, setSocket] = useState<Socket | null>(null);
+  const [socket, setSocket] = useState<KiteSocket | null>(null);
   const [friends, setFriends] = useState<Friend[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -178,7 +178,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
 
   // One socket per session; handlers read mutable state through refs.
   useEffect(() => {
-    const s = io({ auth: { token: getToken() }, transports: ['websocket', 'polling'] });
+    const s = new KiteSocket(getToken());
     setSocket(s);
 
     s.on('connect', () => {
@@ -187,7 +187,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
       if (selectedRef.current) s.emit('mark-messages-read', { friendId: selectedRef.current });
     });
     s.on('disconnect', () => setConnected(false));
-    s.on('connect_error', err => {
+    s.on('connect_error', (err: Error) => {
       setConnected(false);
       if (err.message === 'unauthorized') onLogout();
     });

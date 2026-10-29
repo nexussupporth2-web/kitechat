@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Socket } from 'socket.io-client';
+import type { KiteSocket } from './socket';
 import { api } from './api.ts';
 import type { CallType, Friend, IncomingCall } from './types.ts';
 
@@ -26,7 +26,7 @@ const RING_TIMEOUT_MS = 45_000;
  * Flow: caller gets media -> invites -> joins the room and waits.
  *       callee accepts -> gets media -> joins -> creates the offer to the caller.
  */
-export function useCall(socket: Socket | null) {
+export function useCall(socket: KiteSocket | null) {
   const [incoming, setIncoming] = useState<IncomingCall | null>(null);
   const [call, setCall] = useState<ActiveCall | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
@@ -36,7 +36,7 @@ export function useCall(socket: Socket | null) {
   const [seconds, setSeconds] = useState(0);
   const [notice, setNotice] = useState('');
 
-  const socketRef = useRef<Socket | null>(socket);
+  const socketRef = useRef<KiteSocket | null>(socket);
   socketRef.current = socket;
   const callRef = useRef<ActiveCall | null>(null);
   const incomingRef = useRef<IncomingCall | null>(null);
