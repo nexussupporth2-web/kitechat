@@ -3,7 +3,12 @@
 // Calls, files, profiles and Kite Network come in later phases.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { DurableObject } from 'cloudflare:workers';
-import type { User, Message } from '../server/store.ts';
+import { data, messageIndex, initStore, save, addMessage as storeAdd, messagesFor as storeMessagesFor, type User, type Message } from './store.ts';
+import { ENV, setEnv } from './runtime.ts';
+import { initR2, r2Enabled, signGet, head } from './r2.ts';
+import { initModeration, blockedMessage } from './moderation.ts';
+import { mediaRouter } from './media.ts';
+import { networkRouter } from './network.ts';
 
 const enc = new TextEncoder();
 const b64 = (buf: ArrayBuffer | Uint8Array) =>
@@ -14,7 +19,7 @@ const json = (body: unknown, status = 200) =>
 const err = (message: string, status: number, extra: object = {}) => json({ error: message, ...extra }, status);
 const uuid = () => crypto.randomUUID();
 
-const BLOCKED_MSG = 'Your account has been blocked for sharing adult content.';
+const BLOCKED_MSG = blockedMessage;
 const TOKEN_TTL = 30 * 24 * 3600 * 1000;
 
 async function pbkdf2(password: string, salt: Uint8Array): Promise<string> {
@@ -55,53 +60,84 @@ async function verifyToken(secret: string, token: unknown): Promise<string | nul
 }
 
 export class Hub extends DurableObject {
-  users: Record<string, User> = {};
-  messages: Message[] = [];
-  index = new Map<string, Message>();
   buckets = new Map<string, { count: number; reset: number }>();
+  routers: any[] = [];
+  sweepers: (() => Promise<void>)[] = [];
+
+  get users() {
+    return data.users;
+  }
+  get messages() {
+    return data.messages;
+  }
+  get index() {
+    return messageIndex;
+  }
 
   constructor(ctx: any, env: any) {
     super(ctx, env);
+    setEnv(env);
+    initR2();
+    initModeration();
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
     ctx.blockConcurrencyWhile(async () => {
-      const all: Map<string, any> = await ctx.storage.list();
-      for (const [k, v] of all) {
-        if (k.startsWith('u:')) this.users[k.slice(2)] = v;
-        else if (k.startsWith('m:')) this.messages.push(v);
-      }
-      this.messages.sort((a, b) => a.timestamp - b.timestamp);
-      for (const m of this.messages) this.index.set(m.id, m);
+      await initStore(ctx.storage);
       this.syncAdminFriends();
       this.syncBroadcasts();
+      // Pictures, files, profiles and Kite Network (the same code that runs on Render).
+      const io = {
+        to: (room: string) => {
+          const rooms = [room];
+          const o: any = {
+            to: (r: string) => (rooms.push(r), o),
+            emit: (event: string, payload: unknown) => this.emitTo(rooms.map(r => r.replace(/^user:/, '')), event, payload)
+          };
+          return o;
+        }
+      };
+      const requireAuth = async (req: any, res: any, next: any) => {
+        const h: string = req.headers.authorization || '';
+        const uid = await verifyToken(this.secret, h.startsWith('Bearer ') ? h.slice(7) : '');
+        const user = uid ? this.users[uid] : undefined;
+        if (!user) return res.status(401).json({ error: 'Unauthorized' });
+        if (user.blocked) return res.status(403).json({ error: BLOCKED_MSG, blocked: true });
+        res.locals.user = user;
+        next();
+      };
+      const areFriends = (a: string, b: string) => this.areFriends(a, b);
+      const net = networkRouter({ requireAuth, areFriends, isAdmin: (u: User) => u.userId === this.adminId });
+      const media = mediaRouter({ io, requireAuth, areFriends, isOnline: (id: string) => this.isOnline(id), notifyOffline: () => {} });
+      this.routers = [net, media];
+      if (media.sweep) this.sweepers.push(media.sweep);
+      if (!(await ctx.storage.getAlarm())) await ctx.storage.setAlarm(Date.now() + 10 * 60_000);
     });
+  }
+
+  /** Every 10 minutes: remove expired stories and shared files. */
+  async alarm() {
+    for (const f of this.sweepers) await f().catch(e => console.error('sweep failed', e));
+    await this.ctx.storage.setAlarm(Date.now() + 10 * 60_000);
   }
 
   // ---------- small helpers ----------
 
   get adminId(): string {
-    return ((this.env as any).ADMIN_ID || 'KITE_ADMIN').trim().toUpperCase();
+    return (ENV.ADMIN_ID || 'KITE_ADMIN').trim().toUpperCase();
   }
   get secret(): string {
     return (this.env as any).AUTH_SECRET;
   }
-  saveUser(u: User) {
-    void this.ctx.storage.put('u:' + u.userId, u);
+  saveUser(_u: User) {
+    save();
   }
   addMessage(m: Message) {
-    this.messages.push(m);
-    this.index.set(m.id, m);
-    this.saveMsg(m);
+    storeAdd(m);
   }
-  saveMsg(m: Message) {
-    void this.ctx.storage.put('m:' + m.id, m);
+  saveMsg(_m: Message) {
+    save();
   }
   messagesFor(userId: string, limit = 1000): Message[] {
-    const out: Message[] = [];
-    for (let i = this.messages.length - 1; i >= 0 && out.length < limit; i--) {
-      const m = this.messages[i];
-      if (m.senderId === userId || m.recipientId === userId) out.push(m);
-    }
-    return out.reverse().sort((a, b) => a.timestamp - b.timestamp);
+    return storeMessagesFor(userId, limit);
   }
   publicUser(u: User) {
     return { userId: u.userId, name: u.name, avatar: u.avatar, isAdmin: u.userId === this.adminId };
@@ -173,8 +209,9 @@ export class Hub extends DurableObject {
       const have = new Set(sent.filter(m => m.recipientId === u.userId).map(m => m.broadcastId ?? m.message));
       for (const [key, original] of all) {
         if (have.has(key)) continue;
+        const newId = uuid();
         this.addMessage({
-          id: uuid(),
+          id: newId,
           senderId: admin.userId,
           recipientId: u.userId,
           message: original.message,
@@ -182,7 +219,10 @@ export class Hub extends DurableObject {
           status: 'sent',
           reactions: {},
           broadcast: true,
-          broadcastId: original.broadcastId
+          broadcastId: original.broadcastId,
+          ...(original.bcKey && original.file
+            ? { bcKey: original.bcKey, bcMime: original.bcMime, file: { ...original.file, id: `bc:${newId}` } }
+            : {})
         });
       }
     }
@@ -303,16 +343,30 @@ export class Hub extends DurableObject {
     if (req.method === 'POST' && path === '/api/broadcast') {
       if (me.userId !== this.adminId) return err('Only the admin can send broadcasts', 403);
       if (!this.rateLimit(req, path, 20, 60_000)) return err('Too many attempts, try again in a minute', 429);
-      if (body.file) return err('Attachments in broadcasts come in a later phase of the Cloudflare version', 400);
       const text = typeof body.message === 'string' ? body.message.trim().slice(0, 2000) : '';
-      if (!text) return err('Write a message or attach a file first', 400);
+      // Optional attachment, uploaded first with kind "broadcast". Everyone gets the same file; it is kept in storage.
+      let attach: { key: string; name: string; size: number; mime: string } | null = null;
+      const f = body.file;
+      if (f) {
+        if (!r2Enabled || typeof f.key !== 'string' || !f.key.startsWith('broadcast/')) return err('Invalid attachment', 400);
+        const info = await head(f.key).catch(() => null);
+        if (!info) return err('Attachment not found. Please try again.', 400);
+        attach = {
+          key: f.key,
+          name: String(f.name ?? 'file').replace(/[\\/\0\r\n"]/g, '_').trim().slice(0, 120) || 'file',
+          size: info.size,
+          mime: info.type
+        };
+      }
+      if (!text && !attach) return err('Write a message or attach a file first', 400);
       this.syncAdminFriends();
       const broadcastId = uuid();
       let sent = 0;
       for (const u of Object.values(this.users)) {
         if (u.userId === me.userId) continue;
+        const id = uuid();
         const msg: Message = {
-          id: uuid(),
+          id,
           senderId: me.userId,
           recipientId: u.userId,
           message: text,
@@ -320,13 +374,27 @@ export class Hub extends DurableObject {
           status: this.isOnline(u.userId) ? 'received' : 'sent',
           reactions: {},
           broadcast: true,
-          broadcastId
+          broadcastId,
+          ...(attach
+            ? { file: { id: `bc:${id}`, name: attach.name, size: attach.size, gone: false, permanent: true }, bcKey: attach.key, bcMime: attach.mime }
+            : {})
         };
         this.addMessage(msg);
         this.emitTo([u.userId, me.userId], 'chat-message', msg);
         sent++;
       }
       return json({ sent });
+    }
+
+    const bcf = path.match(/^\/api\/broadcast\/file\/([^/]+)$/);
+    if (req.method === 'GET' && bcf) {
+      const m = this.index.get(decodeURIComponent(bcf[1]));
+      if (!m || !m.bcKey || !m.file || (m.senderId !== me.userId && m.recipientId !== me.userId)) return err('Not found', 404);
+      try {
+        return json({ url: await signGet(m.bcKey, { expiresIn: 600, downloadName: m.file.name }), name: m.file.name });
+      } catch {
+        return err('Could not prepare the download', 500);
+      }
     }
 
     if (req.method === 'POST' && path === '/api/chats/pin') {
@@ -359,7 +427,16 @@ export class Hub extends DurableObject {
       return json({ ok: true });
     }
 
-    return err('This part is not available in the Cloudflare test copy yet', 501);
+    // Pictures, files, profiles, stories, reels, Kite Network, moderation.
+    const rest = path.replace(/^\/api/, '');
+    const query: Record<string, string> = {};
+    url.searchParams.forEach((v, k) => (query[k] = v));
+    const ctx = { headers: req.headers, body, query, ip: req.headers.get('cf-connecting-ip') || '' };
+    for (const r of this.routers) {
+      const out = r.handle(req.method, rest, ctx);
+      if (out) return out;
+    }
+    return err('Not found', 404);
   }
 
   // ---------- live connection ----------

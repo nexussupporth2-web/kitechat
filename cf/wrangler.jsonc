@@ -9,6 +9,7 @@
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*", "/healthz", "/ws"]
   },
+  "vars": { "R2_BUCKET": "kitechat" },
   "durable_objects": { "bindings": [{ "name": "HUB", "class_name": "Hub" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Hub"] }],
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "kitechat" }]
