@@ -7,6 +7,7 @@ import crypto from 'crypto';
 import { data, messageIndex, addMessage, messagesFor, save, flush, initStore, type Message, type User } from './server/store.ts';
 import { mediaRouter } from './server/media.ts';
 import { networkRouter } from './server/network.ts';
+import { friendsRouter } from './server/friends.ts';
 import { blockedMessage } from './server/moderation.ts';
 import { r2Enabled, signGet, head } from './server/r2.ts';
 import { canPush, pushEnabled, sendPush, vapidPublicKey } from './server/push.ts';
@@ -627,6 +628,7 @@ async function start() {
   syncBroadcasts(); // everyone also gets the older broadcasts they missed
   syncAdminFriends(); // everyone who joined before gets the admin as a friend too
   app.use('/api', networkRouter({ requireAuth, areFriends, isAdmin: (u: User) => u.userId === ADMIN_ID }));
+  app.use('/api', friendsRouter({ io, requireAuth, friendView, photoUrl: photoUrlOf }));
   app.use('/api', mediaRouter({
       io,
       requireAuth,
