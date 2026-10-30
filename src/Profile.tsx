@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowLeft, MessageSquare, Play, Plus, Trash2, X } from 'lucide-react';
+import { ArrowLeft, Check, MessageSquare, Play, Plus, Trash2, UserPlus, X } from 'lucide-react';
 import { api } from './api.ts';
 import BusinessInfo, { type Business } from './BusinessInfo.tsx';
 import { deletePost, phaseLabel, publishPost, type MediaConfig, type Phase } from './media.ts';
@@ -16,6 +16,8 @@ interface Item {
 interface ProfileData {
   business: Business;
   isFriend: boolean;
+  /** Where a friend request stands between me and this person. */
+  requestState?: 'none' | 'sent' | 'received';
   user: {
     userId: string;
     name: string;
@@ -40,6 +42,8 @@ interface Props {
   onBack?: () => void;
   /** Shown for a friend's profile. */
   onMessage?: () => void;
+  /** Called after a friend request is accepted, so the chat list can refresh. */
+  onFriendsChanged?: () => void;
   /** Extra content shown under the album (used by the Stories & Reels page). */
   children?: ReactNode;
 }
@@ -47,7 +51,7 @@ interface Props {
 const isVideo = (i: Item) => i.mime.startsWith('video/');
 
 /** A profile with a photo/video album. The owner can add and delete; friends can look. */
-export default function Profile({ userId, isMe, onBack, onMessage, children }: Props) {
+export default function Profile({ userId, isMe, onBack, onMessage, onFriendsChanged, children }: Props) {
   const [data, setData] = useState<ProfileData | null>(null);
   const [cfg, setCfg] = useState<MediaConfig | null>(null);
   const [tab, setTab] = useState<'all' | 'videos' | 'images'>('all');
@@ -59,6 +63,8 @@ export default function Profile({ userId, isMe, onBack, onMessage, children }: P
   const target = useRef<'album' | 'story'>('album');
   const vis = useRef<'public' | 'friends'>('public');
   const fileRef = useRef<HTMLInputElement>(null);
+  const [friendBusy, setFriendBusy] = useState(false);
+  const [notice, setNotice] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -75,6 +81,33 @@ export default function Profile({ userId, isMe, onBack, onMessage, children }: P
     setData(null);
     void load();
   }, [load]);
+
+  /** "Become friends": ask, or accept when they already asked me. */
+  const friendAction = async () => {
+    if (!data || data.isFriend || friendBusy) return;
+    setFriendBusy(true);
+    setNotice('');
+    try {
+      if (data.requestState === 'received') {
+        await api('/api/friends/respond', { userId, accept: true });
+        setData({ ...data, isFriend: true, requestState: 'none' });
+        onFriendsChanged?.();
+      } else {
+        const r = await api<{ state: 'sent' | 'friends' }>('/api/friends/request', { userId });
+        if (r.state === 'friends') {
+          setData({ ...data, isFriend: true, requestState: 'none' });
+          onFriendsChanged?.();
+        } else {
+          setData({ ...data, requestState: 'sent' });
+          setNotice('Friend request sent. You can chat once they accept.');
+        }
+      }
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : 'Could not send the request');
+    } finally {
+      setFriendBusy(false);
+    }
+  };
 
   const addFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -201,9 +234,25 @@ export default function Profile({ userId, isMe, onBack, onMessage, children }: P
               </button>
             </>
           ) : (
-            data.isFriend && <button onClick={onMessage} className="w-full py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white text-sm font-semibold flex items-center justify-center gap-2">
-              <MessageSquare className="w-4 h-4" /> Message
-            </button>
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  onClick={friendAction}
+                  disabled={data.isFriend || data.requestState === 'sent' || friendBusy}
+                  className="py-3 rounded-2xl bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-800 disabled:text-slate-300 text-accent-ink text-sm font-semibold flex items-center justify-center gap-2"
+                >
+                  {data.isFriend ? <Check className="w-4 h-4" /> : <UserPlus className="w-4 h-4" />}
+                  {data.isFriend ? 'Friends' : data.requestState === 'sent' ? 'Request sent' : data.requestState === 'received' ? 'Accept request' : 'Become friends'}
+                </button>
+                <button
+                  onClick={() => (data.isFriend ? onMessage?.() : setNotice('You can chat after you become friends.'))}
+                  className="py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white text-sm font-semibold flex items-center justify-center gap-2"
+                >
+                  <MessageSquare className="w-4 h-4" /> Message
+                </button>
+              </div>
+              {notice && <p role="status" className="mt-2 text-xs text-amber-300 text-center">{notice}</p>}
+            </>
           )}
           {progress && (
             <div className="mt-3">

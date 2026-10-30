@@ -109,6 +109,7 @@ function Root() {
 function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () => void; onUserChange: (u: User) => void }) {
   const [socket, setSocket] = useState<KiteSocket | null>(null);
   const [friends, setFriends] = useState<Friend[]>([]);
+  const [requests, setRequests] = useState<{ userId: string; name: string; avatar: string; photoUrl: string | null }[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [typing, setTyping] = useState<Record<string, boolean>>({});
@@ -154,7 +155,23 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
     } catch (e) {
       if (e instanceof ApiError && (e.status === 401 || e.blocked)) onLogout();
     }
+    // Friend requests waiting for an answer (never blocks the rest).
+    try {
+      const r = await api<{ incoming: { userId: string; name: string; avatar: string; photoUrl: string | null }[] }>('/api/friends/requests');
+      setRequests(r.incoming);
+    } catch {
+      /* an older server without friend requests */
+    }
   }, [onLogout]);
+
+  const answerRequest = async (userId: string, accept: boolean) => {
+    try {
+      await api('/api/friends/respond', { userId, accept });
+    } catch {
+      /* it may already be answered */
+    }
+    void loadData();
+  };
 
   const refreshWallpaper = useCallback(() => {
     const id = selectedRef.current;
@@ -211,6 +228,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
       loadData(); // also brings in their picture
     });
     s.on('profile-updated', () => loadData());
+    s.on('friend-request', () => loadData());
     s.on('chat-message', (msg: ChatMessage) => {
       setMessages(prev => (prev.some(m => m.id === msg.id) ? prev : [...prev, msg]));
       if (msg.senderId !== user.userId) {
@@ -461,6 +479,22 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
             </button>
           </div>
           <div className="flex-1 overflow-y-auto p-2 space-y-1">
+            {requests.length > 0 && (
+              <div className="mb-2 rounded-2xl border border-cyan-500/30 bg-cyan-500/5 p-2">
+                <p className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-cyan-400">Friend requests ({requests.length})</p>
+                {requests.map(r => (
+                  <div key={r.userId} className="flex items-center gap-2 p-2">
+                    <Avatar avatar={r.avatar} photoUrl={r.photoUrl} className="w-9 h-9 text-sm" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-white truncate">{r.name}</p>
+                      <p className="text-[10px] font-mono text-cyan-400 truncate">{r.userId}</p>
+                    </div>
+                    <button onClick={() => answerRequest(r.userId, true)} className="px-2.5 py-1 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-accent-ink text-xs font-semibold">Accept</button>
+                    <button onClick={() => answerRequest(r.userId, false)} className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs">Decline</button>
+                  </div>
+                ))}
+              </div>
+            )}
             {listNote && <p role="status" className="px-3 py-2 text-xs text-amber-300">{listNote}</p>}
             {user.isAdmin && (
               <button
@@ -596,6 +630,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
             userId={profileFor}
             isMe={profileFor === user.userId}
             onBack={() => setProfileFor(null)}
+            onFriendsChanged={() => void loadData()}
             onMessage={() => {
               setSelectedId(profileFor);
               setTab('chats');
