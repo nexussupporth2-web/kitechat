@@ -64,6 +64,9 @@ export interface User {
   hidden?: string[];
   /** Chats this user pinned to the top of their chat list (up to 3, in pin order). */
   pinnedChats?: string[];
+  /** Friend requests: people who asked to become friends with me, and people I asked. */
+  reqIn?: string[];
+  reqOut?: string[];
   /** Devices that allowed notifications (so a closed app can still be told about a message or call). */
   pushSubs?: { endpoint: string; keys: { p256dh: string; auth: string } }[];
 }
