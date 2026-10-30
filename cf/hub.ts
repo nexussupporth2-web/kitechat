@@ -4,9 +4,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { DurableObject } from 'cloudflare:workers';
 import { data, messageIndex, initStore, save, addMessage as storeAdd, messagesFor as storeMessagesFor, type User, type Message } from './store.ts';
-import { ENV, setEnv } from './runtime.ts';
+import { ENV, BUCKET, setEnv } from './runtime.ts';
 import { initR2, r2Enabled, signGet, head } from './r2.ts';
-import { initModeration, blockedMessage } from './moderation.ts';
+import { initModeration, blockedMessage, moderationEnabled } from './moderation.ts';
 import { mediaRouter } from './media.ts';
 import { networkRouter } from './network.ts';
 
@@ -247,6 +247,38 @@ export class Hub extends DurableObject {
     if (path === '/ws') return this.openSocket(req, url);
 
     const body: any = req.method === 'POST' || req.method === 'PATCH' ? await req.json().catch(() => ({})) : {};
+
+    // --- a quick health check of file storage (shows only yes/no answers, never secrets) ---
+    if (req.method === 'GET' && path === '/api/diag') {
+      const out: Record<string, unknown> = {
+        r2Enabled,
+        hasBucket: !!BUCKET,
+        hasAccountId: !!ENV.R2_ACCOUNT_ID,
+        hasAccessKey: !!ENV.R2_ACCESS_KEY_ID,
+        hasSecretKey: !!ENV.R2_SECRET_ACCESS_KEY,
+        bucketName: ENV.R2_BUCKET || null,
+        moderationOn: moderationEnabled
+      };
+      if (r2Enabled) {
+        try {
+          // 404 = the signature was accepted (the file just does not exist). 403 = wrong keys.
+          const g = await fetch(await signGet('diag/none.txt', { expiresIn: 60 }), { method: 'GET' });
+          out.signedReadStatus = g.status;
+          // Upload a tiny file with a signed link, exactly like a phone would, then remove it.
+          const put = await fetch(await signPut('diag/test.txt', 'text/plain', 2, 60), {
+            method: 'PUT',
+            headers: { 'content-type': 'text/plain' },
+            body: 'ok'
+          });
+          out.signedUploadStatus = put.status;
+          if (put.status >= 400) out.signedUploadReply = (await put.text()).slice(0, 300);
+          await BUCKET.delete('diag/test.txt');
+        } catch (e) {
+          out.problem = String((e as any)?.message ?? e).slice(0, 200);
+        }
+      }
+      return json(out);
+    }
 
     // --- no login needed ---
     if (req.method === 'POST' && path === '/api/register') {
