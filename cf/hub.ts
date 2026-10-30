@@ -5,7 +5,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { data, messageIndex, initStore, save, addMessage as storeAdd, messagesFor as storeMessagesFor, type User, type Message } from './store.ts';
 import { ENV, BUCKET, setEnv } from './runtime.ts';
-import { initR2, r2Enabled, signGet, head } from './r2.ts';
+import { initR2, r2Enabled, signGet, signPut, head } from './r2.ts';
 import { initModeration, blockedMessage, moderationEnabled } from './moderation.ts';
 import { mediaRouter } from './media.ts';
 import { networkRouter } from './network.ts';
@@ -257,13 +257,17 @@ export class Hub extends DurableObject {
         hasAccessKey: !!ENV.R2_ACCESS_KEY_ID,
         hasSecretKey: !!ENV.R2_SECRET_ACCESS_KEY,
         bucketName: ENV.R2_BUCKET || null,
-        moderationOn: moderationEnabled
+        moderationOn: moderationEnabled,
+        accountIdLength: (ENV.R2_ACCOUNT_ID || '').length,
+        accessKeyLength: (ENV.R2_ACCESS_KEY_ID || '').length,
+        secretKeyLength: (ENV.R2_SECRET_ACCESS_KEY || '').length
       };
       if (r2Enabled) {
         try {
           // 404 = the signature was accepted (the file just does not exist). 403 = wrong keys.
           const g = await fetch(await signGet('diag/none.txt', { expiresIn: 60 }), { method: 'GET' });
           out.signedReadStatus = g.status;
+          if (g.status !== 404) out.signedReadReply = (await g.text()).slice(0, 300);
           // Upload a tiny file with a signed link, exactly like a phone would, then remove it.
           const put = await fetch(await signPut('diag/test.txt', 'text/plain', 2, 60), {
             method: 'PUT',

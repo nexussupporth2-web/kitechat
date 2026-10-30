@@ -4,6 +4,6 @@ export const ENV: Record<string, string> = {};
 export let BUCKET: any = null;
 
 export function setEnv(env: any) {
-  for (const k of Object.keys(env)) if (typeof env[k] === 'string') ENV[k] = env[k];
+  for (const k of Object.keys(env)) if (typeof env[k] === 'string') ENV[k] = env[k].trim();
   BUCKET = env.BUCKET ?? null;
 }
