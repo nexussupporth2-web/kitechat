@@ -25,6 +25,14 @@ let queued = false;
 
 export async function initStore(st: any): Promise<void> {
   storage = st;
+  // Start from empty: the same running server can start this twice, and records must not be added twice.
+  data.users = {};
+  data.messages = [];
+  data.posts = [];
+  data.shares = [];
+  data.reports = [];
+  saved.clear();
+  messageIndex.clear();
   const all: Map<string, any> = await st.list();
   for (const [k, v] of all) {
     saved.set(k, JSON.stringify(v));
