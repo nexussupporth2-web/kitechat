@@ -296,6 +296,7 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
     const base = {
       business,
       isFriend: self || areFriends(me.userId, owner.userId),
+      requestState: (me.reqOut ?? []).includes(owner.userId) ? 'sent' : (me.reqIn ?? []).includes(owner.userId) ? 'received' : 'none',
       user: {
         profileType: owner.profileType ?? 'private',
         publicActive: profilePublic(owner),

@@ -9,6 +9,7 @@ import { initR2, r2Enabled, signGet, signPut, head } from './r2.ts';
 import { initModeration, blockedMessage, moderationEnabled } from './moderation.ts';
 import { mediaRouter } from './media.ts';
 import { networkRouter } from './network.ts';
+import { friendsRouter } from './friends.ts';
 
 const enc = new TextEncoder();
 const b64 = (buf: ArrayBuffer | Uint8Array) =>
@@ -107,7 +108,8 @@ export class Hub extends DurableObject {
       const areFriends = (a: string, b: string) => this.areFriends(a, b);
       const net = networkRouter({ requireAuth, areFriends, isAdmin: (u: User) => u.userId === this.adminId });
       const media = mediaRouter({ io, requireAuth, areFriends, isOnline: (id: string) => this.isOnline(id), notifyOffline: () => {} });
-      this.routers = [net, media];
+      const friends = friendsRouter({ io, requireAuth, friendView: (u: User) => this.friendView(u), photoUrl: (u: User) => this.photoUrlOf(u) });
+      this.routers = [net, friends, media];
       if (media.sweep) this.sweepers.push(media.sweep);
       if (!(await ctx.storage.getAlarm())) await ctx.storage.setAlarm(Date.now() + 10 * 60_000);
     });
@@ -147,6 +149,9 @@ export class Hub extends DurableObject {
   }
   isOnline(userId: string, except?: WebSocket) {
     return this.socketsOf(userId).some(w => w !== except && w.readyState === WebSocket.OPEN);
+  }
+  async photoUrlOf(u: User): Promise<string | null> {
+    return r2Enabled && u.photo ? await signGet(u.photo.key, { expiresIn: 3600 }).catch(() => null) : null;
   }
   friendView(u: User) {
     return { ...this.publicUser(u), isOnline: this.isOnline(u.userId) };
@@ -318,7 +323,7 @@ export class Hub extends DurableObject {
       const user = this.users[userId.trim().toUpperCase()];
       if (!user || !(await verifyPassword(password, user.passwordHash))) return err('Invalid User ID or password', 401);
       if (user.blocked) return err(BLOCKED_MSG, 403, { blocked: true });
-      return json({ token: await signToken(this.secret, user.userId), user: { ...this.publicUser(user), photoUrl: null } });
+      return json({ token: await signToken(this.secret, user.userId), user: { ...this.publicUser(user), photoUrl: await this.photoUrlOf(user) } });
     }
 
     if (req.method === 'POST' && path === '/api/appeal') {
@@ -340,15 +345,17 @@ export class Hub extends DurableObject {
     if (a instanceof Response) return a;
     const me = a;
 
-    if (req.method === 'GET' && path === '/api/me') return json({ user: { ...this.publicUser(me), photoUrl: null } });
+    if (req.method === 'GET' && path === '/api/me') return json({ user: { ...this.publicUser(me), photoUrl: await this.photoUrlOf(me) } });
 
     if (req.method === 'GET' && path === '/api/friends') {
       const list = me.friends.map(id => this.users[id]).filter(Boolean);
       return json({
-        friends: list.map(u =>
-          u.userId === this.adminId && me.userId !== this.adminId
-            ? { ...this.friendView(u), name: 'System Broadcast', avatar: '📢', photoUrl: null }
-            : { ...this.friendView(u), photoUrl: null, pinOrder: (me.pinnedChats ?? []).indexOf(u.userId) }
+        friends: await Promise.all(
+          list.map(async u =>
+            u.userId === this.adminId && me.userId !== this.adminId
+              ? { ...this.friendView(u), name: 'System Broadcast', avatar: '📢', photoUrl: null }
+              : { ...this.friendView(u), photoUrl: await this.photoUrlOf(u), pinOrder: (me.pinnedChats ?? []).indexOf(u.userId) }
+          )
         )
       });
     }
@@ -364,7 +371,7 @@ export class Hub extends DurableObject {
       this.saveUser(me);
       this.saveUser(target);
       this.emitTo([target.userId], 'friend-added', this.friendView(me));
-      return json({ friend: { ...this.friendView(target), photoUrl: null } });
+      return json({ friend: { ...this.friendView(target), photoUrl: await this.photoUrlOf(target) } });
     }
 
     if (req.method === 'GET' && path === '/api/messages') return json({ messages: this.messagesFor(me.userId) });
