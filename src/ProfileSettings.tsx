@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Camera, Check, Image as ImageIcon, Pencil, Smile, Trash2, X } from 'lucide-react';
 import { api, uploadToStorage } from './api.ts';
-import BusinessInfo, { BIZ_CATEGORIES, DAYS, SOCIALS, defaultHours, type Business } from './BusinessInfo.tsx';
+import { THEMES, applyTheme, currentTheme } from './theme.ts';
+import BusinessInfo,{ BIZ_CATEGORIES, DAYS, SOCIALS, defaultHours, type Business } from './BusinessInfo.tsx';
 
 interface Me {
   userId: string;
@@ -82,12 +83,18 @@ export default function ProfileSettings({ userId, onChanged }: Props) {
   return (
     <div className="flex-1 overflow-y-auto bg-slate-950">
       <div className="max-w-xl mx-auto pb-10">
-        <div className="flex justify-end p-3">
-          <button onClick={() => setEditing(true)} className="w-11 h-11 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center justify-center" aria-label="Edit profile" title="Edit profile">
+        {/* Banner at the back, logo overlapping its bottom edge (upper half on the banner), name below */}
+        <div className="relative">
+          {biz.coverUrl ? (
+            <img src={biz.coverUrl} alt="" className="w-full h-40 object-cover" />
+          ) : (
+            <div className="w-full h-40 bg-gradient-to-tr from-indigo-500/30 via-rose-400/20 to-amber-300/30" />
+          )}
+          <button onClick={() => setEditing(true)} className="absolute top-3 right-3 w-11 h-11 rounded-full bg-black/50 hover:bg-black/60 text-fixed-white flex items-center justify-center" aria-label="Edit profile" title="Edit profile">
             <Pencil className="w-5 h-5" />
           </button>
         </div>
-        <div className="flex flex-col items-center px-4">
+        <div className="flex flex-col items-center px-4 -mt-[4.5rem]">
           <Ring me={me} />
           <h2 className="mt-5 text-xl font-semibold text-white text-center break-words max-w-full">{me.name}</h2>
           <p className="text-sm text-slate-400">@{me.handle ?? me.userId.toLowerCase()}</p>
@@ -99,8 +106,43 @@ export default function ProfileSettings({ userId, onChanged }: Props) {
           )}
           {error && <p role="alert" className="mt-3 text-xs text-rose-400">{error}</p>}
         </div>
-        <BusinessInfo b={{ ...biz, phone: biz.phone }} />
+        <ThemePicker />
+        <BusinessInfo b={{ ...biz, phone: biz.phone }} hideCover />
       </div>
+    </div>
+  );
+}
+
+/** Six pastel colour themes. Purple is the original look; tap another to change the whole app. */
+function ThemePicker() {
+  const [theme, setTheme] = useState(currentTheme);
+  return (
+    <div className="mx-4 mt-6 rounded-2xl bg-slate-900 border border-slate-800 p-4">
+      <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Colour theme</h3>
+      <div className="mt-3 grid grid-cols-3 gap-3">
+        {THEMES.map(t => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => {
+              applyTheme(t.id);
+              setTheme(t.id);
+            }}
+            aria-pressed={theme === t.id}
+            className={`rounded-2xl border p-2.5 flex flex-col items-center gap-2 ${theme === t.id ? 'border-cyan-500 bg-cyan-500/10' : 'border-slate-800 hover:bg-slate-800'}`}
+          >
+            <span className="relative w-12 h-12 rounded-full border border-white/20" style={{ background: `linear-gradient(135deg, ${t.bg} 50%, ${t.accent} 50%)` }}>
+              {theme === t.id && (
+                <span className="absolute inset-0 flex items-center justify-center">
+                  <Check className="w-5 h-5 text-fixed-white drop-shadow" />
+                </span>
+              )}
+            </span>
+            <span className="text-xs text-slate-200">{t.name}</span>
+          </button>
+        ))}
+      </div>
+      <p className="mt-3 text-[11px] text-slate-500">Saved on this phone. Light or dark still follows your phone setting.</p>
     </div>
   );
 }
@@ -310,8 +352,24 @@ function Editor({ me, biz, onClose, onSaved, onPhotoChanged }: { me: Me; biz: Bu
           </button>
         </div>
 
-        {/* 1. Profile picture */}
-        <div className="flex flex-col items-center mt-2">
+        {/* 1. Banner at the back, logo overlapping its bottom edge */}
+        <div className="relative">
+          {biz.coverUrl ? (
+            <img src={biz.coverUrl} alt="" className="w-full h-40 object-cover" />
+          ) : (
+            <div className="w-full h-40 bg-gradient-to-tr from-indigo-500/30 via-rose-400/20 to-amber-300/30 flex items-center justify-center text-xs text-slate-400">No banner yet</div>
+          )}
+          <div className="absolute right-3 top-3 flex gap-2">
+            <button type="button" onClick={() => coverRef.current?.click()} disabled={busy} className="px-3 h-9 rounded-full bg-black/55 text-fixed-white text-xs font-medium flex items-center gap-1.5">
+              <Camera className="w-4 h-4" /> {biz.coverUrl ? 'Change banner' : 'Add banner'}
+            </button>
+            {biz.coverUrl && (
+              <button type="button" onClick={removeCover} disabled={busy} className="px-3 h-9 rounded-full bg-black/55 text-rose-300 text-xs font-medium">Remove</button>
+            )}
+          </div>
+          <input ref={coverRef} type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void uploadCover(f); }} />
+        </div>
+        <div className="flex flex-col items-center -mt-[4.5rem]">
           <div className="relative">
             <Ring me={me} />
             <button onClick={() => setSheet(true)} disabled={busy} className="absolute bottom-1 right-1 w-11 h-11 rounded-full bg-cyan-500 text-accent-ink flex items-center justify-center border-4 border-slate-950" aria-label="Change photo">
@@ -431,16 +489,6 @@ function Editor({ me, biz, onClose, onSaved, onPhotoChanged }: { me: Me; biz: Bu
 
           {/* Business profile */}
           <h3 className="pt-4 text-xs font-semibold uppercase tracking-wider text-slate-400">Business profile</h3>
-          <div>
-            <span className="text-xs text-slate-400 mb-1.5 block">Cover photo</span>
-            {biz.coverUrl ? <img src={biz.coverUrl} alt="" className="w-full h-32 object-cover rounded-2xl" /> : <div className="w-full h-24 rounded-2xl bg-slate-800 flex items-center justify-center text-xs text-slate-500">No cover photo</div>}
-            <div className="mt-2 flex gap-4 text-sm">
-              <button type="button" onClick={() => coverRef.current?.click()} disabled={busy} className="text-cyan-400 font-medium">{biz.coverUrl ? 'Change cover' : 'Add cover'}</button>
-              {biz.coverUrl && <button type="button" onClick={removeCover} disabled={busy} className="text-rose-400">Remove</button>}
-            </div>
-            <input ref={coverRef} type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void uploadCover(f); }} />
-            <p className="mt-1 text-[11px] text-slate-500">Your logo is the profile photo above.</p>
-          </div>
           <label className="block">
             <span className="flex justify-between text-xs text-slate-400 mb-1.5"><span>Business description</span><span>{description.length}/500</span></span>
             <textarea value={description} onChange={e => setDescription(e.target.value.slice(0, 500))} rows={4} className={`${inputCls} resize-none`} placeholder="What do you sell or offer?" />
