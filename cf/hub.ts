@@ -172,6 +172,79 @@ export class Hub extends DurableObject {
       }
     }
   }
+  // ---------- calls ----------
+
+  calls = new Map<string, { callerId: string; calleeId: string }>();
+  iceCache: { at: number; servers: any[] } | null = null;
+
+  /** Free STUN, plus Cloudflare's relay (TURN) when its keys are set, so calls also work on mobile data. */
+  async iceServers(): Promise<any[]> {
+    const stun = { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] };
+    if (!ENV.TURN_KEY_ID || !ENV.TURN_API_TOKEN) return [stun];
+    if (this.iceCache && Date.now() - this.iceCache.at < 30 * 60 * 1000) return this.iceCache.servers;
+    try {
+      const r = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${ENV.TURN_KEY_ID}/credentials/generate-ice-servers`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${ENV.TURN_API_TOKEN}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ ttl: 86400 })
+      });
+      if (!r.ok) return [stun];
+      const j: any = await r.json();
+      const relay = Array.isArray(j.iceServers) ? j.iceServers : [];
+      const servers = [stun, ...relay];
+      this.iceCache = { at: Date.now(), servers };
+      return servers;
+    } catch {
+      return [stun];
+    }
+  }
+
+  attOf(ws: WebSocket): { uid: string; cid: string; roomId?: string; call?: { callerId: string; calleeId: string } } {
+    return (ws.deserializeAttachment() as any) ?? {};
+  }
+  roomMembers(roomId: string): WebSocket[] {
+    return this.ctx.getWebSockets().filter(w => w.readyState === WebSocket.OPEN && this.attOf(w).roomId === roomId);
+  }
+  /** The call's two people. Rebuilt from the open connections if the hub was asleep in between. */
+  callOf(roomId: string) {
+    let c = this.calls.get(roomId);
+    if (!c) {
+      for (const w of this.ctx.getWebSockets()) {
+        const a = this.attOf(w);
+        if (a.roomId === roomId && a.call) {
+          c = a.call;
+          this.calls.set(roomId, c);
+          break;
+        }
+      }
+    }
+    return c;
+  }
+  userInRoom(userId: string): boolean {
+    return this.socketsOf(userId).some(w => w.readyState === WebSocket.OPEN && !!this.attOf(w).roomId);
+  }
+  leaveRoom(ws: WebSocket, except?: boolean) {
+    const a = this.attOf(ws);
+    if (!a.roomId) return;
+    const roomId = a.roomId;
+    const { roomId: _r, call: _c, ...rest } = a;
+    try {
+      ws.serializeAttachment(rest);
+    } catch {
+      /* closed */
+    }
+    const frame = JSON.stringify({ e: 'peer-left', d: { socketId: a.cid } });
+    const others = this.roomMembers(roomId).filter(w => w !== ws);
+    for (const w of others) {
+      try {
+        w.send(frame);
+      } catch {
+        /* closed */
+      }
+    }
+    if (others.length === 0 && !except) this.calls.delete(roomId);
+  }
+
   rateLimit(req: Request, path: string, max: number, windowMs: number): boolean {
     const key = `${path}:${req.headers.get('cf-connecting-ip') || ''}`;
     const now = Date.now();
@@ -263,6 +336,7 @@ export class Hub extends DurableObject {
         hasSecretKey: !!ENV.R2_SECRET_ACCESS_KEY,
         bucketName: ENV.R2_BUCKET || null,
         moderationOn: moderationEnabled,
+        relayOn: !!(ENV.TURN_KEY_ID && ENV.TURN_API_TOKEN),
         accountIdLength: (ENV.R2_ACCOUNT_ID || '').length,
         accessKeyLength: (ENV.R2_ACCESS_KEY_ID || '').length,
         secretKeyLength: (ENV.R2_SECRET_ACCESS_KEY || '').length
@@ -380,7 +454,7 @@ export class Hub extends DurableObject {
     if (path.startsWith('/api/push/')) return json({ ok: true });
 
     if (req.method === 'GET' && path === '/api/ice') {
-      return json({ iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }] });
+      return json({ iceServers: await this.iceServers() });
     }
 
     if (req.method === 'POST' && path === '/api/broadcast') {
@@ -584,9 +658,69 @@ export class Hub extends DurableObject {
         this.emitTo([msg.senderId, msg.recipientId], 'message-reaction-update', { messageId, reactions: msg.reactions });
         return;
       }
-      case 'call-invite':
-      case 'join-room':
-        return reply({ ok: false, error: 'Calls are not available in the Cloudflare test copy yet' });
+      case 'call-invite': {
+        const { recipientId, roomId, type } = d;
+        if (typeof recipientId !== 'string' || typeof roomId !== 'string' || !/^CALL-[A-Za-z0-9-]{8,64}$/.test(roomId)) {
+          return reply({ ok: false, error: 'Invalid call' });
+        }
+        if (!this.areFriends(me.userId, recipientId)) return reply({ ok: false, error: 'Not a friend' });
+        if (recipientId === this.adminId) return reply({ ok: false, error: 'Calls are not available in System Broadcast' });
+        const callee = this.users[recipientId];
+        if (!this.isOnline(recipientId)) {
+          return reply({ ok: false, error: `${callee.name} is offline. Calls to closed apps are not available in the test copy yet` });
+        }
+        if (this.userInRoom(recipientId)) return reply({ ok: false, error: `${callee.name} is busy` });
+        if (this.callOf(roomId)) return reply({ ok: false, error: 'Invalid call' });
+        this.calls.set(roomId, { callerId: me.userId, calleeId: recipientId });
+        this.emitTo([recipientId], 'incoming-call', {
+          roomId,
+          callerId: me.userId,
+          callerName: me.name,
+          type: type === 'audio' ? 'audio' : 'video'
+        });
+        return reply({ ok: true });
+      }
+      case 'call-decline': {
+        const call = typeof d.roomId === 'string' ? this.callOf(d.roomId) : undefined;
+        if (!call || call.calleeId !== me.userId) return;
+        this.emitTo([call.callerId], 'call-declined', { roomId: d.roomId, name: me.name });
+        this.emitTo([me.userId], 'call-cancelled', { roomId: d.roomId });
+        return;
+      }
+      case 'call-cancel': {
+        const call = typeof d.roomId === 'string' ? this.callOf(d.roomId) : undefined;
+        if (!call || call.callerId !== me.userId) return;
+        this.emitTo([call.calleeId], 'call-cancelled', { roomId: d.roomId });
+        return;
+      }
+      case 'join-room': {
+        const { roomId } = d;
+        const call = typeof roomId === 'string' ? this.callOf(roomId) : undefined;
+        if (!call || (call.callerId !== me.userId && call.calleeId !== me.userId)) {
+          return reply({ ok: false, error: 'Call is no longer available' });
+        }
+        this.leaveRoom(ws, true);
+        const members = this.roomMembers(roomId);
+        if (members.length >= 2) return reply({ ok: false, error: 'Call is full' });
+        const peers = members.map(w => this.attOf(w).cid);
+        ws.serializeAttachment({ ...this.attOf(ws), roomId, call });
+        return reply({ ok: true, peers });
+      }
+      case 'leave-room':
+        this.leaveRoom(ws);
+        return;
+      case 'signal': {
+        const a = this.attOf(ws);
+        if (!a.roomId || typeof d.to !== 'string') return;
+        const target = this.roomMembers(a.roomId).find(w => this.attOf(w).cid === d.to);
+        if (!target) return;
+        try {
+          target.send(JSON.stringify({ e: 'signal', d: { from: a.cid, data: d.data } }));
+        } catch {
+          /* closed */
+        }
+        return;
+      }
       default:
         return;
     }
@@ -599,6 +733,7 @@ export class Hub extends DurableObject {
     this.gone(ws);
   }
   gone(ws: WebSocket) {
+    this.leaveRoom(ws);
     const att = ws.deserializeAttachment() as { uid: string } | null;
     const me = att && this.users[att.uid];
     if (!me) return;
