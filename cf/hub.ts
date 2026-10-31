@@ -337,6 +337,10 @@ export class Hub extends DurableObject {
         bucketName: ENV.R2_BUCKET || null,
         moderationOn: moderationEnabled,
         relayOn: !!(ENV.TURN_KEY_ID && ENV.TURN_API_TOKEN),
+        adminIdSet: !!ENV.ADMIN_ID,
+        adminIdLength: (ENV.ADMIN_ID || '').length,
+        adminAccountExists: !!this.users[this.adminId],
+        adminIdStartsWith: this.adminId.slice(0, 3),
         accountIdLength: (ENV.R2_ACCOUNT_ID || '').length,
         accessKeyLength: (ENV.R2_ACCESS_KEY_ID || '').length,
         secretKeyLength: (ENV.R2_SECRET_ACCESS_KEY || '').length
