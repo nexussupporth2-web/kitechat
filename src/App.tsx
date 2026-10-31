@@ -10,6 +10,7 @@ import Feed from './Feed.tsx';
 import Network, { Moderation } from './Network.tsx';
 import Profile from './Profile.tsx';
 import ProfileSettings from './ProfileSettings.tsx';
+import ThemeSheet from './ThemeSheet.tsx';
 import { downloadSharedFile, sendFileToFriend, uploadBroadcastFile, type MediaConfig } from './media.ts';
 import { enableNotifications, notificationState, notify, playMessageSound, registerSW, startRinging, stopRinging, subscribePush, unlockAudioOnFirstTap } from './notify.ts';
 import { useCall } from './useCall.ts';
@@ -123,6 +124,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
   const [broadcastOpen, setBroadcastOpen] = useState(false);
   const [listNote, setListNote] = useState('');
   const [moderationOpen, setModerationOpen] = useState(false);
+  const [themeOpen, setThemeOpen] = useState(false);
   const [broadcastText, setBroadcastText] = useState('');
   const [broadcastBusy, setBroadcastBusy] = useState(false);
   const [broadcastNote, setBroadcastNote] = useState('');
@@ -442,6 +444,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
                     <button role="menuitem" onClick={() => goTo('profile')} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">Profile Settings</button>
                   </>
                 )}
+                <button role="menuitem" onClick={() => { setMenuOpen(false); setThemeOpen(true); }} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">🎨 Colour theme</button>
                 {user.isAdmin && (
                   <button role="menuitem" onClick={() => { setMenuOpen(false); setBroadcastNote(''); setBroadcastOpen(true); }} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">
                     📢 System Broadcast
@@ -640,6 +643,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
         </div>
       )}
 
+      {themeOpen && <ThemeSheet onClose={() => setThemeOpen(false)} />}
       {moderationOpen && <Moderation onClose={() => setModerationOpen(false)} onChanged={() => {}} />}
 
       {broadcastOpen && (
