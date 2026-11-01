@@ -5,6 +5,7 @@ import KiteIcon from './KiteIcon.tsx';
 import { formatBytes } from './api.ts';
 import { formatMessage } from './format.tsx';
 import { loadWallOpacity, onWallOpacityChange, wallpaperBackground } from './wallpaper.ts';
+import { ensureFont, FONTS, seeingStyles } from './prefs.ts';
 import { phaseLabel, type Phase, type ProgressFn } from './media.ts';
 import type { ChatMessage, Friend } from './types.ts';
 
@@ -40,6 +41,18 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
   const [downloading, setDownloading] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const [wallOpacity, setWallOpacity] = useState(loadWallOpacity);
+  // How this friend chose to show their messages (only if they share it and I choose to see it).
+  const fs = seeingStyles() ? friend.style : undefined;
+  useEffect(() => {
+    if (fs?.font) ensureFont(fs.font);
+  }, [fs?.font]);
+  const fsStyle: React.CSSProperties = fs
+    ? {
+        ...(fs.color ? { color: fs.color } : {}),
+        ...(fs.font ? { fontFamily: FONTS.find(f => f.id === fs.font)?.family } : {}),
+        ...(fs.accent ? { borderLeft: `3px solid ${fs.accent}`, paddingLeft: '0.6rem' } : {})
+      }
+    : {};
   useEffect(() => onWallOpacityChange(setWallOpacity), []);
 
   const pickFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -222,6 +235,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
                       e.stopPropagation();
                       setPickerFor(pickerFor === msg.id ? null : msg.id);
                     }}
+                    style={mine ? undefined : fsStyle}
                     className={`msg-text py-1 cursor-pointer break-words text-left ${mine ? 'msg-mine' : 'msg-theirs'}`}
                   >
                     {msg.broadcast && <div className="text-[10px] font-semibold uppercase tracking-wider opacity-70 mb-1">📢 System Broadcast</div>}

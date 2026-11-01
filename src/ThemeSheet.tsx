@@ -3,7 +3,7 @@ import { Check, X } from 'lucide-react';
 import { THEMES, applyTheme, currentTheme } from './theme.ts';
 import { playMessageSound } from './notify.ts';
 import { startRingtone } from './ringtone.ts';
-import { CUSTOM_FONT_FAMILY, FONTS, applyFont, currentFont, customFontName, getMsgColor, getSoundChoice, setCustomFont, setMsgColor, setCustomSound, setSoundMode, type MsgSide, type SoundKind } from './prefs.ts';
+import { CUSTOM_FONT_FAMILY, FONTS, applyFont, currentFont, customFontName, getMsgColor, getSoundChoice, seeingStyles, setSeeingStyles, setSharingStyle, sharingStyle, syncStyle, setCustomFont, setMsgColor, setCustomSound, setSoundMode, type MsgSide, type SoundKind } from './prefs.ts';
 import {
   DEFAULT_WALLPAPER,
   PRESET_WALLPAPERS,
@@ -44,6 +44,36 @@ function ColourRow({ side, title }: { side: MsgSide; title: string }) {
       <div className="mt-3 rounded-xl border border-slate-800 p-3">
         <div className={`msg-text ${side === 'mine' ? 'msg-mine text-right' : 'msg-theirs'}`}>{side === 'mine' ? 'This is how your messages look' : 'This is how your friends’ messages look'}</div>
       </div>
+    </div>
+  );
+}
+
+/** Show my look to friends, and see theirs. */
+function ShareToggles() {
+  const [share, setShare] = useState(sharingStyle);
+  const [see, setSee] = useState(seeingStyles);
+  const row = (on: boolean, label: string, hint: string, fn: (v: boolean) => void) => (
+    <button type="button" role="switch" aria-checked={on} onClick={() => fn(!on)} className="w-full mt-2 flex items-center justify-between gap-3 text-left px-3 py-2.5 rounded-xl border border-slate-800">
+      <span>
+        <span className="block text-sm text-white">{label}</span>
+        <span className="block text-[11px] text-slate-400">{hint}</span>
+      </span>
+      <span className={`shrink-0 w-11 h-6 rounded-full p-0.5 transition-colors ${on ? 'bg-cyan-500' : 'bg-slate-700'}`}>
+        <span className={`block w-5 h-5 rounded-full bg-white transition-transform ${on ? 'translate-x-5' : ''}`} />
+      </span>
+    </button>
+  );
+  return (
+    <div className="mt-6">
+      <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Friends</p>
+      {row(share, 'Show my style to friends', 'They see my message colour, font (ready-made ones) and theme accent in our chat.', v => {
+        setShare(v);
+        setSharingStyle(v);
+      })}
+      {row(see, "See my friends' style", 'Show their message colour, font and accent in my chats.', v => {
+        setSee(v);
+        setSeeingStyles(v);
+      })}
     </div>
   );
 }
@@ -191,6 +221,7 @@ export default function ThemeSheet({ userId, filesEnabled, onChanged, onClose }:
               onClick={() => {
                 applyTheme(t.id);
                 setTheme(t.id);
+                void syncStyle();
               }}
               aria-pressed={theme === t.id}
               className={`rounded-2xl border p-2.5 flex flex-col items-center gap-2 ${theme === t.id ? 'border-cyan-500 bg-cyan-500/10' : 'border-slate-800 hover:bg-slate-800'}`}
@@ -274,6 +305,7 @@ export default function ThemeSheet({ userId, filesEnabled, onChanged, onClose }:
         {tab === 'text' && (<>
           <ColourRow side="mine" title="Outgoing text (what you send)" />
           <ColourRow side="theirs" title="Incoming text (from friends)" />
+          <ShareToggles />
           <p className="mt-4 text-[11px] text-slate-500">Saved on this phone. Default is black on the light look, and light text on the dark look so it stays readable.</p>
         </>)}
 

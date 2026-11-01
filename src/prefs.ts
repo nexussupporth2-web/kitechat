@@ -1,3 +1,6 @@
+import { api } from './api.ts';
+import { THEMES, currentTheme } from './theme.ts';
+
 // Personal choices kept on this phone only: tones and fonts.
 // Small settings go in localStorage; your own uploaded sound or font file goes in IndexedDB (too big for localStorage).
 
@@ -89,6 +92,50 @@ export async function setCustomSound(k: SoundKind, file: File): Promise<void> {
   saveSounds();
 }
 
+// ---------- sharing my look with friends ----------
+const SHARE_KEY = 'kite-share-style';
+const SEE_KEY = 'kite-see-styles';
+const flag = (k: string) => {
+  try {
+    return localStorage.getItem(k) !== '0';
+  } catch {
+    return true;
+  }
+};
+const setFlag = (k: string, v: boolean) => {
+  try {
+    localStorage.setItem(k, v ? '1' : '0');
+  } catch {
+    /* ignore */
+  }
+};
+/** Do I show my text colour, font and accent to friends? (default yes) */
+export const sharingStyle = () => flag(SHARE_KEY);
+/** Do I see my friends' text colour, font and accent? (default yes) */
+export const seeingStyles = () => flag(SEE_KEY);
+export function setSeeingStyles(v: boolean) {
+  setFlag(SEE_KEY, v);
+}
+export function setSharingStyle(v: boolean) {
+  setFlag(SHARE_KEY, v);
+  void syncStyle();
+}
+/** Tell the server how my messages should look to friends. Only the four ready-made fonts can be shared. */
+export async function syncStyle(): Promise<void> {
+  try {
+    const theme = THEMES.find(t => t.id === currentTheme());
+    const font = currentFont();
+    await api('/api/style', {
+      share: sharingStyle(),
+      color: getMsgColor('mine') ?? undefined,
+      font: FONTS.some(f => f.id === font && f.id !== 'default') ? font : undefined,
+      accent: theme?.accent
+    });
+  } catch {
+    /* not signed in, or offline: it will be sent the next time something changes */
+  }
+}
+
 // ---------- message text colours ----------
 export type MsgSide = 'mine' | 'theirs';
 const colorKey = (s: MsgSide) => `kite-msg-${s}`;
@@ -110,6 +157,7 @@ export function setMsgColor(s: MsgSide, hex: string | null) {
   }
   if (hex) root.setProperty(`--msg-${s}`, hex);
   else root.removeProperty(`--msg-${s}`);
+  void syncStyle();
 }
 export function applyMsgColors() {
   for (const s of ['mine', 'theirs'] as MsgSide[]) {
@@ -150,6 +198,12 @@ export const customFontName = (): string => {
   }
 };
 
+/** Makes sure a ready-made font (by id) is loaded, so a friend's chosen font can be shown. */
+export function ensureFont(id: string) {
+  const f = FONTS.find(x => x.id === id);
+  if (f) loadGoogleFont(f);
+}
+
 function loadGoogleFont(f: FontOption) {
   if (!f.google) return;
   const id = 'kite-font-' + f.id;
@@ -182,6 +236,7 @@ export function applyFont(id: string) {
   } catch {
     /* ignore */
   }
+  void syncStyle();
 }
 
 /** Use a font file the person uploaded. */
@@ -201,6 +256,7 @@ export async function setCustomFont(file: File): Promise<void> {
   } catch {
     /* ignore */
   }
+  void syncStyle();
 }
 
 /** Run once when the app starts: bring back the saved font and tones. */

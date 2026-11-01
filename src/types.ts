@@ -8,6 +8,8 @@ export interface User {
   /** Link to the profile picture, if the user has one. */
   photoUrl?: string | null;
   isAdmin?: boolean;
+  /** How this person chose to show their messages to friends. */
+  style?: { color?: string; font?: string; accent?: string };
 }
 
 export interface Friend extends User {
