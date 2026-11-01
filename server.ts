@@ -627,7 +627,7 @@ async function start() {
   await initStore();
   syncBroadcasts(); // everyone also gets the older broadcasts they missed
   syncAdminFriends(); // everyone who joined before gets the admin as a friend too
-  app.use('/api', networkRouter({ requireAuth, areFriends, isAdmin: (u: User) => u.userId === ADMIN_ID }));
+  app.use('/api', networkRouter({ io, requireAuth, areFriends, isAdmin: (u: User) => u.userId === ADMIN_ID }));
   app.use('/api', friendsRouter({ io, requireAuth, friendView, photoUrl: photoUrlOf }));
   app.use('/api', mediaRouter({
       io,
