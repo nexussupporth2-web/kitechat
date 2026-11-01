@@ -100,6 +100,55 @@ export async function uploadBroadcastFile(file: File, onProgress: ProgressFn) {
   return { key: s.key, name: file.name };
 }
 
+/**
+ * Takes a few small still pictures from a video, spread across its length, as base64 JPEG.
+ * The server checks these for adult content (the free checking plan cannot look at whole videos).
+ */
+async function videoFrames(blob: Blob, count = 6): Promise<string[]> {
+  const url = URL.createObjectURL(blob);
+  try {
+    const v = document.createElement('video');
+    v.muted = true;
+    v.playsInline = true;
+    v.preload = 'auto';
+    v.src = url;
+    await new Promise<void>((resolve, reject) => {
+      v.onloadeddata = () => resolve();
+      v.onerror = () => reject(new Error('video'));
+      setTimeout(() => reject(new Error('timeout')), 15000);
+    });
+    const dur = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : 1;
+    const w = 320;
+    const h = Math.max(1, Math.round((w * (v.videoHeight || 240)) / (v.videoWidth || 320)));
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const g = canvas.getContext('2d');
+    if (!g) return [];
+    const out: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const t = Math.min(dur - 0.05, (dur * (i + 0.5)) / count);
+      await new Promise<void>(resolve => {
+        v.onseeked = () => resolve();
+        setTimeout(resolve, 4000);
+        v.currentTime = Math.max(0, t);
+      });
+      g.drawImage(v, 0, 0, w, h);
+      const jpg = await new Promise<Blob | null>(r => canvas.toBlob(r, 'image/jpeg', 0.65));
+      if (!jpg) continue;
+      const bytes = new Uint8Array(await jpg.arrayBuffer());
+      let bin = '';
+      for (let k = 0; k < bytes.length; k += 0x8000) bin += String.fromCharCode(...bytes.subarray(k, k + 0x8000));
+      out.push(btoa(bin));
+    }
+    return out;
+  } catch {
+    return [];
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 /** Validate, compress, upload and publish a story/status or reel. */
 export async function publishPost(kind: 'story' | 'reel' | 'album', file: File, caption: string, cfg: MediaConfig, onProgress: ProgressFn, visibility?: 'public' | 'friends') {
   const isImage = file.type.startsWith('image/');
@@ -119,7 +168,7 @@ export async function publishPost(kind: 'story' | 'reel' | 'album', file: File, 
   const { blob, mime } = await prepare(file, onProgress);
   const s = await api<SignResponse>('/api/media/sign', { kind, mime, size: blob.size });
   await uploadToStorage(s.uploadUrl, blob, mime, p => onProgress('uploading', p));
-  await api('/api/posts', { key: s.key, caption, visibility });
+  await api('/api/posts', { key: s.key, caption, visibility, ...(mime.startsWith('video/') ? { frames: await videoFrames(blob) } : {}) });
 }
 
 /** Publish a photo or video to the Kite Network. The server checks it for adult content before it appears. */
@@ -134,7 +183,7 @@ export async function publishNetwork(file: File, caption: string, visibility: 'p
   const { blob, mime } = await prepare(file, onProgress);
   const s = await api<SignResponse>('/api/media/sign', { kind: 'network', mime, size: blob.size });
   await uploadToStorage(s.uploadUrl, blob, mime, p => onProgress('uploading', p));
-  await api('/api/network/posts', { key: s.key, caption, visibility });
+  await api('/api/network/posts', { key: s.key, caption, visibility, ...(mime.startsWith('video/') ? { frames: await videoFrames(blob) } : {}) });
 }
 
 export async function loadFeed() {
