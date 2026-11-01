@@ -29,6 +29,13 @@ export function saveWallOpacity(v: number) {
   } catch {
     /* not remembered in private mode */
   }
+  window.dispatchEvent(new CustomEvent('kite-wallpaper-opacity', { detail: v }));
+}
+/** Lets an open chat follow the slider while it is moved. Returns the clean-up function. */
+export function onWallOpacityChange(fn: (v: number) => void) {
+  const h = (e: Event) => fn((e as CustomEvent<number>).detail);
+  window.addEventListener('kite-wallpaper-opacity', h);
+  return () => window.removeEventListener('kite-wallpaper-opacity', h);
 }
 /** The wallpaper picture with the chosen strength: the rest fades into the plain chat background. */
 export const wallpaperBackground = (url: string, opacity: number) => {

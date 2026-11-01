@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Download, FileText, Image as ImageIcon, MessageSquare, Paperclip, Phone, Pin, Video, X } from 'lucide-react';
+import { ArrowLeft, Download, FileText, MessageSquare, Paperclip, Phone, Pin, Video, X } from 'lucide-react';
 import Avatar from './Avatar.tsx';
 import KiteIcon from './KiteIcon.tsx';
 import { formatBytes } from './api.ts';
-import { DEFAULT_WALLPAPER, PRESET_WALLPAPERS, loadWallOpacity, saveWallOpacity, wallpaperBackground } from './wallpaper.ts';
+import { loadWallOpacity, onWallOpacityChange, wallpaperBackground } from './wallpaper.ts';
 import { phaseLabel, type Phase, type ProgressFn } from './media.ts';
 import type { ChatMessage, Friend } from './types.ts';
 
@@ -28,64 +28,16 @@ interface Props {
   onBack: () => void;
   onOpenProfile: () => void;
   wallpaperUrl: string;
-  onSetWallpaper: (file: File) => Promise<void>;
-  onResetWallpaper: () => Promise<void>;
-  onPickPreset: (id: string) => Promise<void>;
 }
 
-export default function Chat({ me, friend, messages, friendTyping, callDisabled, callHint, filesEnabled, onSendFile, onDownload, onSend, onTyping, onReact, onPin, onCall, onBack, onOpenProfile, wallpaperUrl, onSetWallpaper, onResetWallpaper, onPickPreset }: Props) {
+export default function Chat({ me, friend, messages, friendTyping, callDisabled, callHint, filesEnabled, onSendFile, onDownload, onSend, onTyping, onReact, onPin, onCall, onBack, onOpenProfile, wallpaperUrl }: Props) {
   const [input, setInput] = useState('');
   const [progress, setProgress] = useState<{ phase: Phase; p: number } | null>(null);
   const [fileError, setFileError] = useState('');
   const [downloading, setDownloading] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
-  const wallInput = useRef<HTMLInputElement>(null);
-  const [wallOpen, setWallOpen] = useState(false);
-  const [wallBusy, setWallBusy] = useState(false);
-  const [wallError, setWallError] = useState('');
   const [wallOpacity, setWallOpacity] = useState(loadWallOpacity);
-
-  const changeWallpaper = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-    setWallError('');
-    setWallBusy(true);
-    try {
-      await onSetWallpaper(file);
-      setWallOpen(false);
-    } catch (err) {
-      setWallError(err instanceof Error ? err.message : 'Could not change the wallpaper');
-    } finally {
-      setWallBusy(false);
-    }
-  };
-
-  const pickPreset = async (id: string) => {
-    setWallError('');
-    setWallBusy(true);
-    try {
-      await onPickPreset(id);
-      setWallOpen(false);
-    } catch (err) {
-      setWallError(err instanceof Error ? err.message : 'Could not change the wallpaper');
-    } finally {
-      setWallBusy(false);
-    }
-  };
-
-  const useDefaultWallpaper = async () => {
-    setWallError('');
-    setWallBusy(true);
-    try {
-      await onResetWallpaper();
-      setWallOpen(false);
-    } catch (err) {
-      setWallError(err instanceof Error ? err.message : 'Could not reset the wallpaper');
-    } finally {
-      setWallBusy(false);
-    }
-  };
+  useEffect(() => onWallOpacityChange(setWallOpacity), []);
 
   const pickFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -183,9 +135,6 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
           </button>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={() => { setWallError(''); setWallOpen(true); }} className="w-10 h-10 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center justify-center border border-slate-700" title="Chat wallpaper" aria-label="Chat wallpaper">
-            <ImageIcon className="w-4 h-4" />
-          </button>
           {!friend.isAdmin && (
             <>
               <button onClick={() => onCall('audio')} disabled={callDisabled} className={iconBtn} title={callHint || 'Audio call'}>
@@ -343,62 +292,6 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
           ) : (
             <span role="alert" className="text-rose-400">{fileError}</span>
           )}
-        </div>
-      )}
-
-      {wallOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-4" onClick={() => !wallBusy && setWallOpen(false)}>
-          <div className="w-full max-w-sm max-h-[90dvh] overflow-y-auto bg-slate-900 border border-slate-800 rounded-3xl p-5 shadow-2xl relative" onClick={e => e.stopPropagation()}>
-            <button onClick={() => setWallOpen(false)} disabled={wallBusy} className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-slate-400" aria-label="Close">
-              <X className="w-4 h-4" />
-            </button>
-            <h3 className="text-base font-bold text-white mb-1">Chat wallpaper</h3>
-            <p className="text-xs text-slate-400 mb-4">Your friends will see the picture you choose in their chat with you. The most recent change by either of you is used. The strength slider is only for your phone.</p>
-            <div className="h-40 rounded-2xl border border-slate-800 mb-3 chat-wallpaper bg-slate-950" style={{ backgroundImage: wallpaperBackground(wallpaperUrl, wallOpacity) }} />
-            <label className="block mb-4">
-              <span className="flex justify-between text-xs text-slate-300 mb-1">
-                <span>Picture strength</span>
-                <span>{wallOpacity}%</span>
-              </span>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                step={1}
-                value={wallOpacity}
-                onChange={e => {
-                  const v = Number(e.target.value);
-                  setWallOpacity(v);
-                  saveWallOpacity(v);
-                }}
-                className="w-full"
-                aria-label="Wallpaper strength"
-              />
-              <span className="flex justify-between text-[10px] text-slate-500"><span>0% plain</span><span>100% full picture</span></span>
-            </label>
-            {wallError && <div role="alert" className="mb-3 text-xs text-rose-400">{wallError}</div>}
-            <input ref={wallInput} type="file" accept="image/*" className="hidden" onChange={changeWallpaper} />
-            <p className="text-xs font-semibold text-slate-300 mb-2">Ready-made wallpapers</p>
-            <div className="grid grid-cols-4 gap-2 mb-4">
-              {[{ id: 'kites', name: 'Kites', url: DEFAULT_WALLPAPER }, ...PRESET_WALLPAPERS].map(w => (
-                <button
-                  key={w.id}
-                  type="button"
-                  disabled={wallBusy}
-                  onClick={() => (w.id === 'kites' ? void useDefaultWallpaper() : void pickPreset(w.id))}
-                  className="flex flex-col items-center gap-1 disabled:opacity-60"
-                  aria-label={`${w.name} wallpaper`}
-                >
-                  <span className={`block w-full aspect-[3/4] rounded-xl border bg-cover bg-center ${wallpaperUrl === w.url ? 'border-cyan-500 ring-2 ring-cyan-500/60' : 'border-slate-700'}`} style={{ backgroundImage: `url("${w.url}")` }} />
-                  <span className="text-[10px] text-slate-300 text-center leading-tight">{w.name}</span>
-                </button>
-              ))}
-            </div>
-            <p className="text-xs font-semibold text-slate-300 mb-2">Your own picture</p>
-            <button onClick={() => wallInput.current?.click()} disabled={wallBusy} className="w-full py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-60 text-accent-ink text-sm font-semibold">
-              {wallBusy ? 'Please wait…' : 'Choose your own photo'}
-            </button>
-          </div>
         </div>
       )}
 

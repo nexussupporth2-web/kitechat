@@ -14,7 +14,7 @@ import ThemeSheet from './ThemeSheet.tsx';
 import { downloadSharedFile, sendFileToFriend, uploadBroadcastFile, type MediaConfig } from './media.ts';
 import { enableNotifications, notificationState, notify, playMessageSound, registerSW, startRinging, stopRinging, subscribePush, unlockAudioOnFirstTap } from './notify.ts';
 import { useCall } from './useCall.ts';
-import { DEFAULT_WALLPAPER, loadChatWallpaper, resetMyWallpaper, setMyWallpaper, setPresetWallpaper } from './wallpaper.ts';
+import { DEFAULT_WALLPAPER, loadChatWallpaper } from './wallpaper.ts';
 import type { ChatMessage, Friend, User } from './types.ts';
 
 /** Shows a friendly screen instead of a blank page if something crashes, and recovers by itself. */
@@ -450,7 +450,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
                     <button role="menuitem" onClick={() => goTo('profile')} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">Profile Settings</button>
                   </>
                 )}
-                <button role="menuitem" onClick={() => { setMenuOpen(false); setThemeOpen(true); }} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">🎨 Colour theme</button>
+                <button role="menuitem" onClick={() => { setMenuOpen(false); setThemeOpen(true); }} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">🎨 Colours and Wallpapers</button>
                 {user.isAdmin && (
                   <button role="menuitem" onClick={() => { setMenuOpen(false); setBroadcastNote(''); setBroadcastOpen(true); }} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">
                     📢 System Broadcast
@@ -605,19 +605,6 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
               onBack={() => setSelectedId(null)}
               onOpenProfile={() => setProfileFor(selected.userId)}
               wallpaperUrl={wallpaperUrl}
-              onSetWallpaper={async file => {
-                if (!filesEnabled) throw new Error('Wallpapers need file storage, which is not set up yet');
-                await setMyWallpaper(file);
-                refreshWallpaper();
-              }}
-              onPickPreset={async id => {
-                await setPresetWallpaper(id);
-                refreshWallpaper();
-              }}
-              onResetWallpaper={async () => {
-                await resetMyWallpaper();
-                refreshWallpaper();
-              }}
             />
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center text-center p-8">
@@ -653,7 +640,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
         </div>
       )}
 
-      {themeOpen && <ThemeSheet onClose={() => setThemeOpen(false)} />}
+      {themeOpen && <ThemeSheet userId={user.userId} filesEnabled={filesEnabled} onChanged={refreshWallpaper} onClose={() => setThemeOpen(false)} />}
       {moderationOpen && <Moderation onClose={() => setModerationOpen(false)} onChanged={() => {}} />}
 
       {broadcastOpen && (

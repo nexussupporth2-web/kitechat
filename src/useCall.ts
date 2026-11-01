@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { KiteSocket } from './socket';
 import { api } from './api.ts';
+import { startRingtone } from './ringtone.ts';
 import type { CallType, Friend, IncomingCall } from './types.ts';
 
 export type CallStatus = 'ringing' | 'connecting' | 'connected';
@@ -360,6 +361,15 @@ export function useCall(socket: KiteSocket | null) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [socket, teardown, endCall]);
+
+  // Ringtone: rings while a call is coming in, and plays softly for the caller while the other phone rings.
+  const incomingRing = !!incoming && !call;
+  const callerRing = !!call && call.isCaller && call.status === 'ringing';
+  useEffect(() => {
+    if (!incomingRing && !callerRing) return;
+    const stop = startRingtone(incomingRing ? 1 : 0.5, incomingRing);
+    return stop;
+  }, [incomingRing, callerRing]);
 
   // Call timer
   const connected = call?.status === 'connected';
