@@ -195,7 +195,7 @@ export class Hub extends DurableObject {
     return r2Enabled && u.photo ? await signGet(u.photo.key, { expiresIn: 3600 }).catch(() => null) : null;
   }
   friendView(u: User) {
-    return { ...this.publicUser(u), isOnline: this.isOnline(u.userId) };
+    return { ...this.publicUser(u), isOnline: this.isOnline(u.userId), ...(u.style?.share ? { style: { color: u.style.color, font: u.style.font, accent: u.style.accent } } : {}) };
   }
   areFriends(a: string, b: string) {
     return !!this.users[a]?.friends.includes(b);
@@ -496,6 +496,14 @@ export class Hub extends DurableObject {
     if (req.method === 'GET' && path === '/api/messages') return json({ messages: this.messagesFor(me.userId) });
 
     if (req.method === 'GET' && path === '/api/push/key') return json({ key: this.vapid?.pub ?? null });
+    if (req.method === 'POST' && path === '/api/style') {
+      const hex = (v: unknown) => (typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v) ? v.toLowerCase() : undefined);
+      const font = typeof body?.font === 'string' && ['nunito', 'lora', 'caveat', 'poppins'].includes(body.font) ? body.font : undefined;
+      me.style = { color: hex(body?.color), font, accent: hex(body?.accent), share: body?.share !== false };
+      this.saveUser(me);
+      this.emitTo(me.friends, 'profile-updated', { userId: me.userId });
+      return json({ ok: true });
+    }
     if (req.method === 'POST' && path === '/api/push/subscribe') {
       const sub = body?.subscription;
       if (!sub || typeof sub.endpoint !== 'string' || !/^https:\/\//.test(sub.endpoint) || typeof sub.keys?.p256dh !== 'string' || typeof sub.keys?.auth !== 'string') {
