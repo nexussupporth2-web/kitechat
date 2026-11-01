@@ -450,7 +450,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
                     <button role="menuitem" onClick={() => goTo('profile')} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">Profile Settings</button>
                   </>
                 )}
-                <button role="menuitem" onClick={() => { setMenuOpen(false); setThemeOpen(true); }} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">🎨 Colours and Wallpapers</button>
+                <button role="menuitem" onClick={() => { setMenuOpen(false); setThemeOpen(true); }} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">🎨 Personalise</button>
                 {user.isAdmin && (
                   <button role="menuitem" onClick={() => { setMenuOpen(false); setBroadcastNote(''); setBroadcastOpen(true); }} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">
                     📢 System Broadcast

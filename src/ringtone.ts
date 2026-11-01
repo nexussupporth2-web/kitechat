@@ -1,3 +1,5 @@
+import { soundSrc } from './prefs.ts';
+
 // The call ringtone (public/ringtone.mp3). Plays in a loop until stopped.
 // Browsers only allow sound after the person has tapped something on the page; if it is blocked, a vibration is used instead.
 
@@ -5,8 +7,10 @@
 export function startRingtone(volume = 1, vibrate = false): () => void {
   let audio: HTMLAudioElement | null = null;
   let vibTimer: ReturnType<typeof setInterval> | null = null;
+  const src = soundSrc('ring'); // null = "Use system default": no sound from the app, only vibration
   try {
-    audio = new Audio('/ringtone.mp3');
+    if (!src) throw new Error('no in-app sound');
+    audio = new Audio(src);
     audio.loop = true;
     audio.volume = Math.max(0, Math.min(1, volume));
     void audio.play().catch(() => {

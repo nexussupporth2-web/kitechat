@@ -331,6 +331,27 @@ body,
 body {
   background: var(--color-slate-950);
   color: var(--color-slate-100);
+  font-family: var(--app-font, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif);
+}
+
+/* Chat text without bubbles */
+.msg-text {
+  font-size: 1.1875rem;
+  line-height: 1.55;
+}
+.msg-text code,
+.msg-text .mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 0.9em;
+}
+.msg-text code.inline {
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  padding: 0.05em 0.35em;
+  border-radius: 0.35em;
+}
+.msg-text pre.mono {
+  white-space: pre-wrap;
+  margin: 0.15em 0;
 }
 
 /* Chat wallpaper: the picture is dimmed a little so messages stay easy to read in both modes. */

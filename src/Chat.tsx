@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Download, FileText, MessageSquare, Paperclip, Phone, Pin, Video, X } from 'lucide-react';
+import { ArrowLeft, Bold, Code, Download, FileText, Italic, MessageSquare, Paperclip, Phone, Pin, Strikethrough, Video } from 'lucide-react';
 import Avatar from './Avatar.tsx';
 import KiteIcon from './KiteIcon.tsx';
 import { formatBytes } from './api.ts';
+import { formatMessage } from './format.tsx';
 import { loadWallOpacity, onWallOpacityChange, wallpaperBackground } from './wallpaper.ts';
 import { phaseLabel, type Phase, type ProgressFn } from './media.ts';
 import type { ChatMessage, Friend } from './types.ts';
@@ -87,7 +88,35 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
     onTyping(false);
   };
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  const [hasSel, setHasSel] = useState(false);
+  const grow = () => {
+    const t = taRef.current;
+    if (!t) return;
+    t.style.height = 'auto';
+    t.style.height = Math.min(t.scrollHeight, 150) + 'px';
+  };
+  useEffect(grow, [input]);
+
+  /** Wraps the selected words in a formatting symbol (no typing of symbols needed). */
+  const format = (mark: string) => {
+    const t = taRef.current;
+    if (!t) return;
+    const a = t.selectionStart;
+    const b = t.selectionEnd;
+    if (a === b) return;
+    const sel = input.slice(a, b);
+    const next = input.slice(0, a) + mark + sel + mark + input.slice(b);
+    if (next.length > 2000) return;
+    setInput(next);
+    requestAnimationFrame(() => {
+      t.focus();
+      t.setSelectionRange(a + mark.length, b + mark.length);
+      setHasSel(true);
+    });
+  };
+
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
     if (!e.target.value) return stopTyping();
     if (!typingTimer.current) onTyping(true);
@@ -101,8 +130,11 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
     if (!text) return;
     onSend(text);
     setInput('');
+    setHasSel(false);
     stopTyping();
   };
+
+  const fmtBtn = 'w-9 h-9 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-100 flex items-center justify-center border border-slate-700';
 
   const dot = (on: boolean) => `w-1.5 h-1.5 rounded-full ${on ? 'bg-emerald-500' : 'bg-slate-700'}`;
   const iconBtn =
@@ -182,20 +214,18 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
             const myReaction = msg.reactions?.[me];
             return (
               <div key={msg.id} id={`msg-${msg.id}`} className={`flex flex-col ${mine ? 'items-end' : 'items-start'}`}>
-                <div className="relative max-w-[85%] sm:max-w-md">
+                <div className="relative max-w-[92%] sm:max-w-xl">
                   <div
                     onClick={e => {
                       e.stopPropagation();
                       setPickerFor(pickerFor === msg.id ? null : msg.id);
                     }}
-                    className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed shadow cursor-pointer break-words whitespace-pre-wrap ${
-                      mine ? 'bg-cyan-600 text-accent-ink rounded-br-sm' : 'bg-slate-900 border border-slate-800 text-slate-200 rounded-bl-sm'
-                    }`}
+                    className={`msg-text py-1 cursor-pointer break-words text-left ${mine ? 'text-cyan-400' : 'text-slate-100'}`}
                   >
                     {msg.broadcast && <div className="text-[10px] font-semibold uppercase tracking-wider opacity-70 mb-1">📢 System Broadcast</div>}
-                    {msg.file?.permanent && msg.message && <div className="mb-2 whitespace-pre-line break-words">{msg.message}</div>}
+                    {msg.file?.permanent && msg.message && <div className="mb-2 break-words">{formatMessage(msg.message)}</div>}
                     {msg.file ? (
-                      <div className="flex items-center gap-3 min-w-[12rem]">
+                      <div className="flex items-center gap-3 min-w-[12rem] text-sm rounded-xl border border-slate-700 bg-slate-900/70 px-3 py-2 text-slate-200">
                         <FileText className="w-8 h-8 shrink-0 opacity-80" />
                         <div className="min-w-0 flex-1">
                           <div className="font-medium truncate">{msg.file.name}</div>
@@ -220,12 +250,12 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
                         )}
                       </div>
                     ) : (
-                      msg.message
+                      formatMessage(msg.message)
                     )}
                     {reactions.length > 0 && (
                       <div className="flex flex-wrap gap-1 mt-1.5 -mb-0.5">
                         {reactions.map((emoji, i) => (
-                          <span key={i} className="bg-black/30 px-1.5 py-0.5 rounded-full text-[11px]">{emoji}</span>
+                          <span key={i} className="bg-slate-900/80 border border-slate-700 px-1.5 py-0.5 rounded-full text-[11px]">{emoji}</span>
                         ))}
                       </div>
                     )}
@@ -295,7 +325,17 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
         </div>
       )}
 
-      <form onSubmit={submit} className="p-3 sm:p-4 border-t border-slate-800 bg-slate-900/40 flex gap-3">
+      {hasSel && (
+        <div className="px-3 sm:px-4 pt-2 border-t border-slate-800 bg-slate-900/40 flex items-center gap-2" role="toolbar" aria-label="Text formatting">
+          <span className="text-[11px] text-slate-400 mr-1">Format:</span>
+          <button type="button" onPointerDown={e => e.preventDefault()} onClick={() => format('*')} className={fmtBtn} aria-label="Bold" title="Bold"><Bold className="w-4 h-4" /></button>
+          <button type="button" onPointerDown={e => e.preventDefault()} onClick={() => format('_')} className={fmtBtn} aria-label="Italic" title="Italic"><Italic className="w-4 h-4" /></button>
+          <button type="button" onPointerDown={e => e.preventDefault()} onClick={() => format('~')} className={fmtBtn} aria-label="Strikethrough" title="Strikethrough"><Strikethrough className="w-4 h-4" /></button>
+          <button type="button" onPointerDown={e => e.preventDefault()} onClick={() => format('```')} className={`${fmtBtn} font-mono text-xs`} aria-label="Monospace" title="Monospace">{'</>'}</button>
+          <button type="button" onPointerDown={e => e.preventDefault()} onClick={() => format('`')} className={fmtBtn} aria-label="Inline code" title="Inline code"><Code className="w-4 h-4" /></button>
+        </div>
+      )}
+      <form onSubmit={submit} className="p-3 sm:p-4 border-t border-slate-800 bg-slate-900/40 flex gap-3 items-end">
         {filesEnabled && (
           <>
             <input ref={fileInput} type="file" className="hidden" onChange={pickFile} />
@@ -311,13 +351,23 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
             </button>
           </>
         )}
-        <input
-          type="text"
+        <textarea
+          ref={taRef}
+          rows={1}
           value={input}
           onChange={handleChange}
+          onSelect={e => setHasSel(e.currentTarget.selectionStart !== e.currentTarget.selectionEnd)}
+          onBlur={() => setTimeout(() => setHasSel(false), 150)}
+          onKeyDown={e => {
+            // On a computer Enter sends and Shift+Enter makes a new line. On a phone Enter makes a new line; use the send button.
+            if (e.key === 'Enter' && !e.shiftKey && !window.matchMedia('(pointer: coarse)').matches) {
+              e.preventDefault();
+              e.currentTarget.form?.requestSubmit();
+            }
+          }}
           maxLength={2000}
           placeholder={`Message ${friend.name}…`}
-          className="flex-1 min-w-0 bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-cyan-500"
+          className="flex-1 min-w-0 bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-base text-white focus:outline-none focus:border-cyan-500 resize-none leading-snug"
         />
         <button type="submit" className="w-11 h-11 bg-cyan-500 hover:bg-cyan-400 text-accent-ink rounded-xl flex items-center justify-center shrink-0" aria-label="Send">
           <KiteIcon className="w-6 h-6" />

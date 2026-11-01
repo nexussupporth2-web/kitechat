@@ -1,5 +1,6 @@
 import { api } from './api.ts';
 import { startRingtone } from './ringtone.ts';
+import { soundSrc } from './prefs.ts';
 
 /** Notifications and sounds. System notifications use the phone's own default notification sound. */
 
@@ -111,10 +112,22 @@ function tone(freq: number, start: number, dur: number, vol = 0.25) {
 }
 
 /** The new-message sound (public/notification.mp3). Falls back to two soft beeps if the browser blocks the file. */
-export function playMessageSound() {
+export function playMessageSound(preview = false) {
   let played = false;
+  const src = soundSrc('notif');
+  if (!src) {
+    // "Use system default": the app stays quiet (only a short buzz); the phone's own sound is used for system notifications.
+    if (!preview) {
+      try {
+        navigator.vibrate?.(120);
+      } catch {
+        /* ignore */
+      }
+    }
+    return;
+  }
   try {
-    const a = new Audio('/notification.mp3');
+    const a = new Audio(src);
     a.volume = 1;
     void a.play().then(
       () => {
