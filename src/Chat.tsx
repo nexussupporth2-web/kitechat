@@ -29,9 +29,11 @@ interface Props {
   onBack: () => void;
   onOpenProfile: () => void;
   wallpaperUrl: string;
+  /** Only the admin can write in System Broadcast. */
+  readOnly?: boolean;
 }
 
-export default function Chat({ me, friend, messages, friendTyping, callDisabled, callHint, filesEnabled, onSendFile, onDownload, onSend, onTyping, onReact, onPin, onCall, onBack, onOpenProfile, wallpaperUrl }: Props) {
+export default function Chat({ me, friend, messages, friendTyping, callDisabled, callHint, filesEnabled, onSendFile, onDownload, onSend, onTyping, onReact, onPin, onCall, onBack, onOpenProfile, wallpaperUrl, readOnly }: Props) {
   const [input, setInput] = useState('');
   const [progress, setProgress] = useState<{ phase: Phase; p: number } | null>(null);
   const [fileError, setFileError] = useState('');
@@ -325,7 +327,10 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
         </div>
       )}
 
-      {hasSel && (
+      {readOnly && (
+        <div className="p-4 border-t border-slate-800 bg-slate-900/40 text-center text-xs text-slate-400">Only System Admin can send messages here.</div>
+      )}
+      {!readOnly && hasSel && (
         <div className="px-3 sm:px-4 pt-2 border-t border-slate-800 bg-slate-900/40 flex items-center gap-2" role="toolbar" aria-label="Text formatting">
           <span className="text-[11px] text-slate-400 mr-1">Format:</span>
           <button type="button" onPointerDown={e => e.preventDefault()} onClick={() => format('*')} className={fmtBtn} aria-label="Bold" title="Bold"><Bold className="w-4 h-4" /></button>
@@ -335,7 +340,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
           <button type="button" onPointerDown={e => e.preventDefault()} onClick={() => format('`')} className={fmtBtn} aria-label="Inline code" title="Inline code"><Code className="w-4 h-4" /></button>
         </div>
       )}
-      <form onSubmit={submit} className="p-3 sm:p-4 border-t border-slate-800 bg-slate-900/40 flex gap-3 items-end">
+      {!readOnly && <form onSubmit={submit} className="p-3 sm:p-4 border-t border-slate-800 bg-slate-900/40 flex gap-3 items-end">
         {filesEnabled && (
           <>
             <input ref={fileInput} type="file" className="hidden" onChange={pickFile} />
@@ -372,7 +377,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
         <button type="submit" className="w-11 h-11 bg-cyan-500 hover:bg-cyan-400 text-accent-ink rounded-xl flex items-center justify-center shrink-0" aria-label="Send">
           <KiteIcon className="w-6 h-6" />
         </button>
-      </form>
+      </form>}
     </div>
   );
 }

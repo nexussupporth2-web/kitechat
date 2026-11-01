@@ -144,7 +144,26 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
   const typingTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   const calls = useCall(socket);
-  const selected = friends.find(f => f.userId === selectedId) ?? null;
+  // For the admin, "System Broadcast" is a chat of its own that shows each broadcast once.
+  const BC = '__broadcast__';
+  const selected: Friend | null =
+    selectedId === BC
+      ? { userId: BC, name: 'System Broadcast', avatar: '📢', photoUrl: null, isAdmin: true, isOnline: true }
+      : friends.find(f => f.userId === selectedId) ?? null;
+  const chatMessages = (() => {
+    if (!user.isAdmin) return messages;
+    if (selectedId !== BC) return messages.filter(m => !(m.broadcast && m.senderId === user.userId));
+    const seen = new Set<string>();
+    const out: ChatMessage[] = [];
+    for (const m of messages) {
+      if (!m.broadcast || m.senderId !== user.userId) continue;
+      const key = (m as ChatMessage & { broadcastId?: string }).broadcastId ?? m.id;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ ...m, recipientId: BC, status: 'read' });
+    }
+    return out;
+  })();
 
   const loadData = useCallback(async () => {
     try {
@@ -177,7 +196,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
 
   const refreshWallpaper = useCallback(() => {
     const id = selectedRef.current;
-    if (id) void loadChatWallpaper(id).then(url => selectedRef.current === id && setWallpaperUrl(url));
+    if (id && id !== '__broadcast__') void loadChatWallpaper(id).then(url => selectedRef.current === id && setWallpaperUrl(url));
   }, []);
   useEffect(() => {
     setWallpaperUrl(DEFAULT_WALLPAPER);
@@ -452,7 +471,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
                 )}
                 <button role="menuitem" onClick={() => { setMenuOpen(false); setThemeOpen(true); }} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">🎨 Personalise</button>
                 {user.isAdmin && (
-                  <button role="menuitem" onClick={() => { setMenuOpen(false); setBroadcastNote(''); setBroadcastOpen(true); }} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">
+                  <button role="menuitem" onClick={() => { setMenuOpen(false); setSelectedId(BC); setTab('chats'); }} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800">
                     📢 System Broadcast
                   </button>
                 )}
@@ -507,7 +526,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
             {listNote && <p role="status" className="px-3 py-2 text-xs text-amber-300">{listNote}</p>}
             {user.isAdmin && (
               <button
-                onClick={() => { setBroadcastNote(''); setBroadcastOpen(true); }}
+                onClick={() => setSelectedId(BC)}
                 className="w-full text-left flex items-center justify-between p-3 rounded-2xl border border-cyan-500/30 bg-cyan-500/5 hover:bg-cyan-500/10"
               >
                 <div className="flex items-center gap-3 min-w-0">
@@ -517,7 +536,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
                       System Broadcast
                       <span className="ml-2 align-middle px-1.5 py-0.5 rounded-md bg-cyan-500/20 text-cyan-400 text-[10px] font-semibold">Official</span>
                     </h4>
-                    <span className="text-[11px] text-slate-400">Tap to send an update to everyone</span>
+                    <span className="text-[11px] text-slate-400">Your updates to everyone</span>
                   </div>
                 </div>
                 <ChevronRight className="w-4 h-4 text-slate-500" />
@@ -587,23 +606,29 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
               key={selected.userId}
               me={user.userId}
               friend={selected}
-              messages={messages}
+              messages={chatMessages}
+              readOnly={!user.isAdmin && !!selected.isAdmin}
               friendTyping={!!typing[selected.userId]}
               callDisabled={inCall || !!calls.incoming}
               filesEnabled={filesEnabled}
               onSendFile={(file, onProgress) => {
+                if (selected.userId === BC) {
+                  return uploadBroadcastFile(file, onProgress).then(async f => {
+                    await api('/api/broadcast', { message: '', file: f });
+                  });
+                }
                 if (!mediaCfg) return Promise.reject(new Error('File sharing is not available'));
                 return sendFileToFriend(file, selected.userId, mediaCfg, onProgress);
               }}
               onDownload={downloadSharedFile}
               callHint={inCall ? 'You are already in a call' : !selected.isOnline ? `${selected.name} is offline. They will get a call notification.` : ''}
-              onSend={text => socket?.emit('chat-message', { recipientId: selected.userId, message: text })}
-              onTyping={isTyping => socket?.emit('typing', { recipientId: selected.userId, isTyping })}
+              onSend={text => (selected.userId === BC ? void api('/api/broadcast', { message: text }).catch(() => {}) : socket?.emit('chat-message', { recipientId: selected.userId, message: text }))}
+              onTyping={isTyping => selected.userId !== BC && socket?.emit('typing', { recipientId: selected.userId, isTyping })}
               onReact={(messageId, reaction) => socket?.emit('message-reaction', { messageId, reaction })}
               onPin={pinMessage}
               onCall={type => calls.startCall(selected, type)}
               onBack={() => setSelectedId(null)}
-              onOpenProfile={() => setProfileFor(selected.userId)}
+              onOpenProfile={() => selected.userId !== BC && setProfileFor(selected.userId)}
               wallpaperUrl={wallpaperUrl}
             />
           ) : (
