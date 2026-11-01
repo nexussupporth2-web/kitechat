@@ -106,7 +106,7 @@ export class Hub extends DurableObject {
         next();
       };
       const areFriends = (a: string, b: string) => this.areFriends(a, b);
-      const net = networkRouter({ requireAuth, areFriends, isAdmin: (u: User) => u.userId === this.adminId });
+      const net = networkRouter({ io, requireAuth, areFriends, isAdmin: (u: User) => u.userId === this.adminId });
       const media = mediaRouter({ io, requireAuth, areFriends, isOnline: (id: string) => this.isOnline(id), notifyOffline: () => {} });
       const friends = friendsRouter({ io, requireAuth, friendView: (u: User) => this.friendView(u), photoUrl: (u: User) => this.photoUrlOf(u) });
       this.routers = [net, friends, media];
