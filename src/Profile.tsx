@@ -263,7 +263,7 @@ export default function Profile({ userId, isMe, onBack, onMessage, onFriendsChan
             </div>
           )}
           {error && <p role="alert" className="mt-3 text-xs text-rose-400">{error}</p>}
-          {isMe && <p className="mt-2 text-[11px] text-slate-500 text-center">Feed: up to {data.caps.image} photos and {data.caps.video} videos (30 s). Status: up to 2, disappears after 24 hours. Adding more replaces the oldest.</p>}
+          {isMe && <p className="mt-2 text-[11px] text-slate-500 text-center">Feed: up to {data.caps.image} photos and {data.caps.video} videos (30 s). Status: up to 1, disappears after 24 hours. Adding more replaces the oldest.</p>}
         </div>
 
         <div className="mx-4 mt-5 rounded-[2rem] bg-slate-800/70 flex items-center py-5">
