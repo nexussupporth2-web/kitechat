@@ -114,7 +114,7 @@ export function networkRouter({ requireAuth, areFriends, isAdmin, io }: Deps) {
         await remove(key).catch(() => {});
         return res.status(413).json({ error: 'Storage full. Delete something first.' });
       }
-      const v = await checkUpload(me, key, info.type, 'network post');
+      const v = await checkUpload(me, key, info.type, 'network post', req.body?.frames);
       if (!v.ok) return res.status(v.status ?? 400).json({ error: v.error, blocked: v.blocked });
       data.posts.push({
         id: crypto.randomUUID(),

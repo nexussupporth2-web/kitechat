@@ -41,7 +41,26 @@ export const profilePublic = (u: User | undefined) =>
 export type ScanResult = 'clean' | 'adult' | 'error';
 
 /** Looks at the uploaded file in storage. Photos are checked by link, videos by frames. */
-export async function scanMedia(key: string, mime: string): Promise<ScanResult> {
+/** Checks a few still pictures taken from a video (sent as base64 JPEG by the app). Works on Sightengine's free plan. */
+async function scanFrames(frames: string[]): Promise<ScanResult> {
+  let sawError = false;
+  for (const b64 of frames.slice(0, 8)) {
+    if (typeof b64 !== 'string' || b64.length > 400_000) return 'error';
+    const bin = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    const form = new FormData();
+    form.append('media', new Blob([bin], { type: 'image/jpeg' }), 'frame.jpg');
+    form.append('models', 'nudity-2.0');
+    form.append('api_user', API_USER);
+    form.append('api_secret', API_SECRET);
+    const r = await fetch('https://api.sightengine.com/1.0/check.json', { method: 'POST', body: form, signal: AbortSignal.timeout(20_000) });
+    const j = (await r.json()) as { status?: string; nudity?: Nudity };
+    if (j.status !== 'success') sawError = true;
+    else if (bad(j.nudity)) return 'adult';
+  }
+  return sawError ? 'error' : 'clean';
+}
+
+export async function scanMedia(key: string, mime: string, frames?: string[]): Promise<ScanResult> {
   if (!moderationEnabled || !r2Enabled) return 'error';
   try {
     const url = await signGet(key, { expiresIn: 600 });
@@ -53,6 +72,7 @@ export async function scanMedia(key: string, mime: string): Promise<ScanResult> 
       return bad(j.nudity) ? 'adult' : 'clean';
     }
     if (mime.startsWith('video/')) {
+      if (Array.isArray(frames) && frames.length >= 3) return await scanFrames(frames);
       const f = await fetch(url, { signal: AbortSignal.timeout(30_000) });
       if (!f.ok) return 'error';
       const form = new FormData();
@@ -84,10 +104,10 @@ export interface Verdict {
  * the uploader gets a final warning (first time) or is blocked (next time).
  * Audio and other types pass. If the scanner is down the upload is refused (and deleted), with no strike.
  */
-export async function checkUpload(user: User, key: string, mime: string, where: string): Promise<Verdict> {
+export async function checkUpload(user: User, key: string, mime: string, where: string, frames?: string[]): Promise<Verdict> {
   if (!mime.startsWith('image/') && !mime.startsWith('video/')) return { ok: true };
   if (!moderationEnabled) return { ok: true };
-  const result = await scanMedia(key, mime);
+  const result = await scanMedia(key, mime, frames);
   if (result === 'clean') return { ok: true };
   await remove(key).catch(() => {});
   if (result === 'error') return { ok: false, status: 503, error: 'We could not check this file right now. Please try again in a minute.' };

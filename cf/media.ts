@@ -196,7 +196,7 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
         await remove(key).catch(() => {});
         return res.status(413).json({ error: 'File is over your limit' });
       }
-      const v = await checkUpload(me, key, info.type, 'post');
+      const v = await checkUpload(me, key, info.type, 'post', req.body?.frames);
       if (!v.ok) return res.status(v.status ?? 400).json({ error: v.error, blocked: v.blocked });
       // Keep only the newest few: when the limit is reached, the oldest one goes.
       const isImg = info.type in IMAGE_TYPES;
