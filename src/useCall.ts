@@ -343,6 +343,10 @@ export function useCall(socket: KiteSocket | null) {
       updateIncoming(null);
     };
 
+    // Opened the app (maybe from a call notification)? Ask the server whether someone is still calling.
+    const askCalls = () => socket.emit('check-calls');
+    socket.on('connect', askCalls);
+    if (socket.connected) askCalls();
     socket.on('incoming-call', onIncoming);
     socket.on('call-cancelled', onCancelled);
     socket.on('call-declined', onDeclined);
@@ -350,6 +354,7 @@ export function useCall(socket: KiteSocket | null) {
     socket.on('signal', onSignal);
     socket.on('disconnect', onDisconnect);
     return () => {
+      socket.off('connect', askCalls);
       socket.off('incoming-call', onIncoming);
       socket.off('call-cancelled', onCancelled);
       socket.off('call-declined', onDeclined);
