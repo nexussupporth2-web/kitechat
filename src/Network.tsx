@@ -374,12 +374,17 @@ export function Moderation({ onClose, onChanged }: { onClose: () => void; onChan
   const [reports, setReports] = useState<Report[]>([]);
   const [blocked, setBlocked] = useState<Blocked[]>([]);
   const [note, setNote] = useState('Loading…');
+  const [accounts, setAccounts] = useState<{ userId: string; name: string; createdAt: number; friends: number; posts: number }[]>([]);
 
   const load = useCallback(async () => {
     try {
-      const r = await api<{ reports: Report[]; blocked: Blocked[] }>('/api/admin/moderation');
+      const [r, u] = await Promise.all([
+        api<{ reports: Report[]; blocked: Blocked[] }>('/api/admin/moderation'),
+        api<{ users: { userId: string; name: string; createdAt: number; friends: number; posts: number }[] }>('/api/admin/users')
+      ]);
       setReports(r.reports);
       setBlocked(r.blocked);
+      setAccounts(u.users);
       setNote('');
     } catch (e) {
       setNote(e instanceof ApiError ? e.message : 'Could not load');
@@ -407,6 +412,28 @@ export function Moderation({ onClose, onChanged }: { onClose: () => void; onChan
           <button onClick={onClose} className="text-slate-400" aria-label="Close"><X className="w-5 h-5" /></button>
         </div>
         {note && <p className="text-xs text-slate-400">{note}</p>}
+
+        <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Accounts ({accounts.length})</h4>
+        {accounts.length === 0 && <p className="text-xs text-slate-500">No other accounts.</p>}
+        {accounts.map(a => (
+          <div key={a.userId} className="rounded-2xl bg-slate-800/60 p-3 text-sm flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-white font-semibold truncate">{a.name}</div>
+              <div className="text-[11px] text-slate-400 font-mono truncate">{a.userId}</div>
+              <div className="text-[11px] text-slate-500">{a.friends} friends · {a.posts} posts · joined {new Date(a.createdAt).toLocaleDateString()}</div>
+            </div>
+            <button
+              onClick={() => {
+                if (window.confirm(`Delete ${a.name} (${a.userId})?\n\nTheir chats, posts and pictures will be removed for good. This cannot be undone.`)) {
+                  void run(() => api('/api/admin/users/delete', { userId: a.userId }));
+                }
+              }}
+              className="shrink-0 px-3 py-1.5 rounded-lg bg-rose-500/20 text-rose-300 text-xs font-semibold"
+            >
+              Delete
+            </button>
+          </div>
+        ))}
 
         <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Blocked accounts ({blocked.length})</h4>
         {blocked.length === 0 && <p className="text-xs text-slate-500">None.</p>}

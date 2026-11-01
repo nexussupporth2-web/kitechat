@@ -14,7 +14,7 @@ import ThemeSheet from './ThemeSheet.tsx';
 import { downloadSharedFile, sendFileToFriend, uploadBroadcastFile, type MediaConfig } from './media.ts';
 import { enableNotifications, notificationState, notify, playMessageSound, registerSW, startRinging, stopRinging, subscribePush, unlockAudioOnFirstTap } from './notify.ts';
 import { useCall } from './useCall.ts';
-import { DEFAULT_WALLPAPER, loadChatWallpaper, resetMyWallpaper, setMyWallpaper } from './wallpaper.ts';
+import { DEFAULT_WALLPAPER, loadChatWallpaper, resetMyWallpaper, setMyWallpaper, setPresetWallpaper } from './wallpaper.ts';
 import type { ChatMessage, Friend, User } from './types.ts';
 
 /** Shows a friendly screen instead of a blank page if something crashes, and recovers by itself. */
@@ -231,6 +231,12 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
     });
     s.on('profile-updated', () => loadData());
     s.on('friend-request', () => loadData());
+    s.on('friend-removed', ({ userId: gone }: { userId: string }) => {
+      setFriends(prev => prev.filter(f => f.userId !== gone));
+      setMessages(prev => prev.filter(m => m.senderId !== gone && m.recipientId !== gone));
+      setSelectedId(cur => (cur === gone ? null : cur));
+      loadData();
+    });
     s.on('chat-message', (msg: ChatMessage) => {
       setMessages(prev => (prev.some(m => m.id === msg.id) ? prev : [...prev, msg]));
       if (msg.senderId !== user.userId) {
@@ -602,6 +608,10 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
               onSetWallpaper={async file => {
                 if (!filesEnabled) throw new Error('Wallpapers need file storage, which is not set up yet');
                 await setMyWallpaper(file);
+                refreshWallpaper();
+              }}
+              onPickPreset={async id => {
+                await setPresetWallpaper(id);
                 refreshWallpaper();
               }}
               onResetWallpaper={async () => {
