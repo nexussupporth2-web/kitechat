@@ -89,6 +89,35 @@ export async function setCustomSound(k: SoundKind, file: File): Promise<void> {
   saveSounds();
 }
 
+// ---------- message text colours ----------
+export type MsgSide = 'mine' | 'theirs';
+const colorKey = (s: MsgSide) => `kite-msg-${s}`;
+export const getMsgColor = (s: MsgSide): string | null => {
+  try {
+    return localStorage.getItem(colorKey(s));
+  } catch {
+    return null;
+  }
+};
+/** hex like "#aa0000", or null to go back to the default (black on the light look). */
+export function setMsgColor(s: MsgSide, hex: string | null) {
+  const root = document.documentElement.style;
+  try {
+    if (hex) localStorage.setItem(colorKey(s), hex);
+    else localStorage.removeItem(colorKey(s));
+  } catch {
+    /* ignore */
+  }
+  if (hex) root.setProperty(`--msg-${s}`, hex);
+  else root.removeProperty(`--msg-${s}`);
+}
+export function applyMsgColors() {
+  for (const s of ['mine', 'theirs'] as MsgSide[]) {
+    const c = getMsgColor(s);
+    if (c) document.documentElement.style.setProperty(`--msg-${s}`, c);
+  }
+}
+
 // ---------- fonts ----------
 export interface FontOption {
   id: string;
@@ -176,6 +205,7 @@ export async function setCustomFont(file: File): Promise<void> {
 
 /** Run once when the app starts: bring back the saved font and tones. */
 export async function initPrefs(): Promise<void> {
+  applyMsgColors();
   const font = currentFont();
   if (font === 'custom') {
     try {

@@ -3,7 +3,7 @@ import { Check, X } from 'lucide-react';
 import { THEMES, applyTheme, currentTheme } from './theme.ts';
 import { playMessageSound } from './notify.ts';
 import { startRingtone } from './ringtone.ts';
-import { CUSTOM_FONT_FAMILY, FONTS, applyFont, currentFont, customFontName, getSoundChoice, setCustomFont, setCustomSound, setSoundMode, type SoundKind } from './prefs.ts';
+import { CUSTOM_FONT_FAMILY, FONTS, applyFont, currentFont, customFontName, getMsgColor, getSoundChoice, setCustomFont, setMsgColor, setCustomSound, setSoundMode, type MsgSide, type SoundKind } from './prefs.ts';
 import {
   DEFAULT_WALLPAPER,
   PRESET_WALLPAPERS,
@@ -16,8 +16,37 @@ import {
   wallpaperBackground
 } from './wallpaper.ts';
 
-type Tab = 'colour' | 'wallpaper' | 'sound' | 'font';
-const TABS: [Tab, string][] = [['colour', 'Colour theme'], ['wallpaper', 'Wallpapers'], ['sound', 'Notifications'], ['font', 'Fonts']];
+type Tab = 'colour' | 'wallpaper' | 'sound' | 'font' | 'text';
+const TABS: [Tab, string][] = [['colour', 'Colour theme'], ['wallpaper', 'Wallpapers'], ['sound', 'Notifications'], ['font', 'Fonts'], ['text', 'Text font colour']];
+
+const SWATCHES = ['#000000', '#ffffff', '#1e3a8a', '#065f46', '#991b1b', '#6b21a8', '#92400e', '#0e7490'];
+
+/** Pick the colour of message text for one side (outgoing or incoming). */
+function ColourRow({ side, title }: { side: MsgSide; title: string }) {
+  const [c, setC] = useState(() => getMsgColor(side));
+  const set = (hex: string | null) => {
+    setMsgColor(side, hex);
+    setC(hex);
+  };
+  return (
+    <div className="mt-5">
+      <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">{title}</p>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <button type="button" onClick={() => set(null)} aria-pressed={!c} className={`px-3 h-9 rounded-full border text-xs ${!c ? 'border-cyan-500 bg-cyan-500/10 text-white' : 'border-slate-700 text-slate-200'}`}>Default</button>
+        {SWATCHES.map(h => (
+          <button key={h} type="button" onClick={() => set(h)} aria-label={`Colour ${h}`} aria-pressed={c === h} className={`w-9 h-9 rounded-full border-2 ${c === h ? 'border-cyan-500' : 'border-slate-600'}`} style={{ background: h }} />
+        ))}
+        <label className="px-3 h-9 rounded-full border border-slate-700 text-xs text-slate-200 flex items-center gap-2">
+          Your own
+          <input type="color" value={c ?? '#000000'} onChange={e => set(e.target.value)} className="w-6 h-6 bg-transparent border-0 p-0" />
+        </label>
+      </div>
+      <div className="mt-3 rounded-xl border border-slate-800 p-3">
+        <div className={`msg-text ${side === 'mine' ? 'msg-mine text-right' : 'msg-theirs'}`}>{side === 'mine' ? 'This is how your messages look' : 'This is how your friends’ messages look'}</div>
+      </div>
+    </div>
+  );
+}
 
 /** One tone setting: default tone, your own uploaded sound, or the phone's own sound. */
 function ToneRow({ kind, title }: { kind: SoundKind; title: string }) {
@@ -146,7 +175,7 @@ export default function ThemeSheet({ userId, filesEnabled, onChanged, onClose }:
 
         <div className="mt-3 grid grid-cols-2 gap-2" role="tablist">
           {TABS.map(([id, label]) => (
-            <button key={id} role="tab" aria-selected={tab === id} onClick={() => setTab(id)} className={`py-2 rounded-xl text-xs font-semibold border ${tab === id ? 'border-cyan-500 bg-cyan-500/10 text-white' : 'border-slate-800 text-slate-300 hover:bg-slate-800'}`}>
+            <button key={id} role="tab" aria-selected={tab === id} onClick={() => setTab(id)} className={`${id === 'text' ? 'col-span-2 ' : ''}py-2 rounded-xl text-xs font-semibold border ${tab === id ? 'border-cyan-500 bg-cyan-500/10 text-white' : 'border-slate-800 text-slate-300 hover:bg-slate-800'}`}>
               {label}
             </button>
           ))}
@@ -240,6 +269,12 @@ export default function ThemeSheet({ userId, filesEnabled, onChanged, onClose }:
           <ToneRow kind="ring" title="Ring tone (calls)" />
           <ToneRow kind="notif" title="Notification tone (messages)" />
           <p className="mt-4 text-[11px] text-slate-500">Saved on this phone only. When the app is closed, your phone plays its own notification sound.</p>
+        </>)}
+
+        {tab === 'text' && (<>
+          <ColourRow side="mine" title="Outgoing text (what you send)" />
+          <ColourRow side="theirs" title="Incoming text (from friends)" />
+          <p className="mt-4 text-[11px] text-slate-500">Saved on this phone. Default is black on the light look, and light text on the dark look so it stays readable.</p>
         </>)}
 
         {tab === 'font' && (<>

@@ -336,8 +336,21 @@ body {
 
 /* Chat text without bubbles */
 .msg-text {
+  --msg-default: #f4f4f8;
   font-size: 1.1875rem;
   line-height: 1.55;
+}
+.msg-text.msg-mine {
+  color: var(--msg-mine, var(--msg-default));
+}
+.msg-text.msg-theirs {
+  color: var(--msg-theirs, var(--msg-default));
+}
+/* Black by default on the light look; the dark look keeps light text so it stays readable. */
+@media (prefers-color-scheme: light) {
+  .msg-text {
+    --msg-default: #000000;
+  }
 }
 .msg-text code,
 .msg-text .mono {

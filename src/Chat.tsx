@@ -222,7 +222,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
                       e.stopPropagation();
                       setPickerFor(pickerFor === msg.id ? null : msg.id);
                     }}
-                    className={`msg-text py-1 cursor-pointer break-words text-left ${mine ? 'text-cyan-400' : 'text-slate-100'}`}
+                    className={`msg-text py-1 cursor-pointer break-words text-left ${mine ? 'msg-mine' : 'msg-theirs'}`}
                   >
                     {msg.broadcast && <div className="text-[10px] font-semibold uppercase tracking-wider opacity-70 mb-1">📢 System Broadcast</div>}
                     {msg.file?.permanent && msg.message && <div className="mb-2 break-words">{formatMessage(msg.message)}</div>}
