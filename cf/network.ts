@@ -110,7 +110,7 @@ export function networkRouter({ requireAuth, areFriends, isAdmin, io }: Deps) {
         return res.status(413).json({ error: 'File is too large' });
       }
       const used = data.posts.filter(p => p.ownerId === me.userId).reduce((s, p) => s + p.size, 0);
-      if (used + info.size > 200 * 1024 * 1024) {
+      if (used + info.size > 100 * 1024 * 1024) {
         await remove(key).catch(() => {});
         return res.status(413).json({ error: 'Storage full. Delete something first.' });
       }

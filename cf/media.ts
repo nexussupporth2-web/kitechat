@@ -25,8 +25,8 @@ export const LIMITS = {
   coverBytes: 800 * 1024,
   maxProducts: 20,
   /** How many of each a user can keep. Adding one more removes the oldest. */
-  caps: { story: 2, reel: 10, albumImage: 10, albumVideo: 10 },
-  quotaBytes: 200 * MB
+  caps: { story: 1, reel: 5, albumImage: 5, albumVideo: 5 },
+  quotaBytes: 100 * MB
 };
 
 const IMAGE_TYPES: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
