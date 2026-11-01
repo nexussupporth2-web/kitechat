@@ -587,6 +587,7 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
   // Every user can pick one wallpaper. In a chat, the picture is the one that was changed most recently
   // by either person, so both phones always show the same image. No pick = the kite default.
 
+  const WALLPAPER_PRESETS = ['clouds', 'watercolor', 'planes', 'hexagons', 'mandala', 'paper'];
   const notifyWallpaper = (me: User) => {
     for (const id of [me.userId, ...me.friends]) io.to(`user:${id}`).emit('wallpaper-updated', { userId: me.userId });
   };
@@ -600,6 +601,11 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
     const best = [me, friend]
       .filter(u => u.wallpaper)
       .sort((a, b) => b.wallpaper!.at - a.wallpaper!.at)[0];
+    if (best && best.wallpaper!.key.startsWith('preset:')) {
+      const id = best.wallpaper!.key.slice(7);
+      if (WALLPAPER_PRESETS.includes(id)) return res.json({ url: `/wallpaper-${id}.jpg`, by: best.userId, at: best.wallpaper!.at });
+      return res.json({ url: null, by: null, at: 0 });
+    }
     if (!best || !r2Enabled) return res.json({ url: null, by: null, at: 0 });
     try {
       res.json({ url: await signGet(best.wallpaper!.key, { expiresIn: LINK_SECONDS }), by: best.userId, at: best.wallpaper!.at });
@@ -609,9 +615,20 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
     }
   });
 
-  router.post('/wallpaper', requireAuth, needStorage, async (req, res) => {
+  router.post('/wallpaper', requireAuth, async (req, res) => {
     const me = res.locals.user as User;
-    const { key } = req.body ?? {};
+    const { key, preset } = req.body ?? {};
+    if (typeof preset === 'string') {
+      // One of the ready-made wallpapers that come with the app (no upload needed).
+      if (!WALLPAPER_PRESETS.includes(preset)) return res.status(400).json({ error: 'Invalid wallpaper' });
+      const old = me.wallpaper?.key;
+      me.wallpaper = { key: `preset:${preset}`, at: Date.now() };
+      save();
+      if (old && !old.startsWith('preset:') && r2Enabled) await remove(old).catch(() => {});
+      notifyWallpaper(me);
+      return res.json({ ok: true });
+    }
+    if (!r2Enabled) return res.status(503).json({ error: 'File storage is not set up yet. Choose one of the ready-made wallpapers instead.' });
     if (typeof key !== 'string' || !key.startsWith(`wallpapers/${me.userId}/`)) return res.status(400).json({ error: 'Invalid request' });
     try {
       const info = await head(key);
@@ -623,7 +640,7 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
       const old = me.wallpaper?.key;
       me.wallpaper = { key, at: Date.now() };
       save();
-      if (old && old !== key) await remove(old).catch(() => {});
+      if (old && old !== key && !old.startsWith('preset:')) await remove(old).catch(() => {});
       notifyWallpaper(me);
       res.json({ ok: true });
     } catch (e) {
@@ -637,7 +654,7 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
     const old = me.wallpaper?.key;
     delete me.wallpaper;
     save();
-    if (old && r2Enabled) await remove(old).catch(() => {});
+    if (old && !old.startsWith('preset:') && r2Enabled) await remove(old).catch(() => {});
     notifyWallpaper(me);
     res.json({ ok: true });
   });
