@@ -1,4 +1,5 @@
 import { api } from './api.ts';
+import { startRingtone } from './ringtone.ts';
 
 /** Notifications and sounds. System notifications use the phone's own default notification sound. */
 
@@ -109,9 +110,27 @@ function tone(freq: number, start: number, dur: number, vol = 0.25) {
   o.stop(a.currentTime + start + dur + 0.05);
 }
 
+/** The new-message sound (public/notification.mp3). Falls back to two soft beeps if the browser blocks the file. */
 export function playMessageSound() {
-  tone(880, 0, 0.18);
-  tone(1320, 0.12, 0.25);
+  let played = false;
+  try {
+    const a = new Audio('/notification.mp3');
+    a.volume = 1;
+    void a.play().then(
+      () => {
+        played = true;
+      },
+      () => {
+        if (!played) {
+          tone(880, 0, 0.18);
+          tone(1320, 0.12, 0.25);
+        }
+      }
+    );
+  } catch {
+    tone(880, 0, 0.18);
+    tone(1320, 0.12, 0.25);
+  }
   try {
     navigator.vibrate?.(120);
   } catch {
@@ -119,29 +138,15 @@ export function playMessageSound() {
   }
 }
 
-let ringTimer: ReturnType<typeof setInterval> | null = null;
+let stopRingtone: (() => void) | null = null;
 
+/** Rings for an incoming call with the call ringtone (public/ringtone.mp3) and a vibration, until stopRinging(). */
 export function startRinging() {
-  if (ringTimer) return;
-  const ring = () => {
-    tone(740, 0, 0.35, 0.3);
-    tone(988, 0.4, 0.35, 0.3);
-    try {
-      navigator.vibrate?.([300, 150, 300]);
-    } catch {
-      /* ignore */
-    }
-  };
-  ring();
-  ringTimer = setInterval(ring, 2000);
+  if (stopRingtone) return;
+  stopRingtone = startRingtone(1, true);
 }
 
 export function stopRinging() {
-  if (ringTimer) clearInterval(ringTimer);
-  ringTimer = null;
-  try {
-    navigator.vibrate?.(0);
-  } catch {
-    /* ignore */
-  }
+  stopRingtone?.();
+  stopRingtone = null;
 }
