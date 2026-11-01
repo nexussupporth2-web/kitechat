@@ -67,6 +67,8 @@ export interface User {
   /** Friend requests: people who asked to become friends with me, and people I asked. */
   reqIn?: string[];
   reqOut?: string[];
+  /** How this person likes their messages to look to friends (they can switch sharing off). */
+  style?: { color?: string; font?: string; accent?: string; share: boolean };
   /** Devices that allowed notifications (so a closed app can still be told about a message or call). */
   pushSubs?: { endpoint: string; keys: { p256dh: string; auth: string } }[];
 }
