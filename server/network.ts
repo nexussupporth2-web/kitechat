@@ -1,6 +1,6 @@
 import { Router, type RequestHandler } from 'express';
 import crypto from 'crypto';
-import { data, save, type Post, type User } from './store.ts';
+import { data, save, messageIndex, type Post, type User } from './store.ts';
 import { r2Enabled, signGet, head, remove } from './r2.ts';
 import { checkUpload, listBlocked, moderationEnabled, profilePublic } from './moderation.ts';
 
@@ -16,9 +16,11 @@ interface Deps {
   requireAuth: RequestHandler;
   areFriends: (a: string, b: string) => boolean;
   isAdmin: (u: User) => boolean;
+  /** Optional: lets people's screens update at once when an account is deleted. */
+  io?: { to(room: string): any };
 }
 
-export function networkRouter({ requireAuth, areFriends, isAdmin }: Deps) {
+export function networkRouter({ requireAuth, areFriends, isAdmin, io }: Deps) {
   const router = Router();
 
   /** Feed posts from "Stories & Reels" (album) and older direct network posts. */
@@ -309,6 +311,74 @@ export function networkRouter({ requireAuth, areFriends, isAdmin }: Deps) {
   router.post('/admin/reports/:id/dismiss', requireAuth, adminOnly, (req, res) => {
     data.reports = data.reports.filter(r => r.id !== req.params.id);
     save();
+    res.json({ ok: true });
+  });
+
+  /** Admin only: every account except the admin, so test accounts can be cleaned up. */
+  router.get('/admin/users', requireAuth, adminOnly, (_req, res) => {
+    const users = Object.values(data.users)
+      .filter(u => !isAdmin(u))
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .map(u => ({
+        userId: u.userId,
+        name: u.name,
+        createdAt: u.createdAt,
+        friends: u.friends.length,
+        posts: data.posts.filter(p => p.ownerId === u.userId).length
+      }));
+    res.json({ users });
+  });
+
+  /** Admin only: delete an account with its chats, posts, pictures and friend links. Cannot be undone. */
+  router.post('/admin/users/delete', requireAuth, adminOnly, async (req, res) => {
+    const id = String(req.body?.userId ?? '');
+    const target = data.users[id];
+    if (!target) return res.status(404).json({ error: 'Account not found' });
+    if (isAdmin(target)) return res.status(400).json({ error: 'The admin account cannot be deleted' });
+
+    const files: string[] = [];
+    const addKey = (k?: string) => {
+      if (k && !k.startsWith('preset:')) files.push(k);
+    };
+    const purge = <T,>(arr: T[], test: (x: T) => boolean, each?: (x: T) => void) => {
+      for (let i = arr.length - 1; i >= 0; i--) {
+        if (test(arr[i])) {
+          each?.(arr[i]);
+          arr.splice(i, 1);
+        }
+      }
+    };
+
+    addKey(target.photo?.key);
+    addKey(target.cover?.key);
+    addKey(target.wallpaper?.key);
+    for (const pr of target.products ?? []) addKey(pr.photo?.key);
+
+    purge(data.posts, p => p.ownerId === id, p => addKey(p.key));
+    for (const p of data.posts) {
+      if (p.likes) delete p.likes[id];
+      if (p.comments) p.comments = p.comments.filter(c => c.userId !== id);
+    }
+    const postIds = new Set(data.posts.map(p => p.id));
+    purge(data.reports, r => r.reporterId === id || !postIds.has(r.postId));
+    purge(data.shares, sh => sh.senderId === id || sh.recipientId === id, sh => addKey(sh.key));
+    purge(data.messages, m => m.senderId === id || m.recipientId === id, m => messageIndex.delete(m.id));
+
+    const notify = new Set<string>(target.friends);
+    for (const u of Object.values(data.users)) {
+      if (u.userId === id) continue;
+      if (u.friends.includes(id)) notify.add(u.userId);
+      u.friends = u.friends.filter(f => f !== id);
+      u.reqIn = (u.reqIn ?? []).filter(f => f !== id);
+      u.reqOut = (u.reqOut ?? []).filter(f => f !== id);
+      u.hidden = (u.hidden ?? []).filter(f => f !== id);
+      u.pinnedChats = (u.pinnedChats ?? []).filter(f => f !== id);
+    }
+    delete data.users[id];
+    save();
+    for (const f of notify) io?.to(`user:${f}`).emit('friend-removed', { userId: id });
+    io?.to(`user:${id}`).emit('friend-removed', { userId: id });
+    if (r2Enabled) for (const k of files) await remove(k).catch(() => {});
     res.json({ ok: true });
   });
 
