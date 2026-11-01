@@ -24,6 +24,15 @@ self.addEventListener('push', event => {
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
       // For a plain message, the open app already shows it.
       if (!call && list.some(c => c.visibilityState === 'visible')) return;
+      if (call) {
+        // A call that nobody answers should not stay on the screen for ever.
+        const tag = d.tag || 'kitechat';
+        event.waitUntil(
+          new Promise(r => setTimeout(r, 45000)).then(() =>
+            self.registration.getNotifications({ tag }).then(ns => ns.forEach(n => n.close()))
+          )
+        );
+      }
       return self.registration.showNotification(d.title || 'KiteChat', {
         body: d.body || 'You have a message',
         tag: d.tag || 'kitechat',
