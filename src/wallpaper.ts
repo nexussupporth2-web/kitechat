@@ -3,6 +3,41 @@ import { api, uploadToStorage } from './api.ts';
 /** Shown when nobody has picked a wallpaper yet (file lives in the public folder). */
 export const DEFAULT_WALLPAPER = '/wallpaper-kites.jpg';
 
+/** Ready-made wallpapers that come with the app (the pictures live in public/wallpapers). */
+export const PRESET_WALLPAPERS = [
+  { id: 'clouds', name: 'Clouds', url: '/wallpaper-clouds.jpg' },
+  { id: 'watercolor', name: 'Watercolour', url: '/wallpaper-watercolor.jpg' },
+  { id: 'planes', name: 'Paper planes', url: '/wallpaper-planes.jpg' },
+  { id: 'hexagons', name: 'Hexagons', url: '/wallpaper-hexagons.jpg' },
+  { id: 'mandala', name: 'Mandala', url: '/wallpaper-mandala.jpg' },
+  { id: 'paper', name: 'Paper', url: '/wallpaper-paper.jpg' }
+] as const;
+
+/** How strong the wallpaper picture is, 0 to 100 percent. Saved on this phone, used in every chat. */
+const OPACITY_KEY = 'kite-wallpaper-opacity';
+export function loadWallOpacity(): number {
+  try {
+    const v = Number(localStorage.getItem(OPACITY_KEY));
+    return localStorage.getItem(OPACITY_KEY) !== null && v >= 0 && v <= 100 ? v : 60;
+  } catch {
+    return 60;
+  }
+}
+export function saveWallOpacity(v: number) {
+  try {
+    localStorage.setItem(OPACITY_KEY, String(v));
+  } catch {
+    /* not remembered in private mode */
+  }
+}
+/** The wallpaper picture with the chosen strength: the rest fades into the plain chat background. */
+export const wallpaperBackground = (url: string, opacity: number) => {
+  const fade = 100 - Math.max(0, Math.min(100, opacity));
+  return `linear-gradient(color-mix(in srgb, var(--color-slate-950) ${fade}%, transparent), color-mix(in srgb, var(--color-slate-950) ${fade}%, transparent)), url("${url}")`;
+};
+
+export const setPresetWallpaper = (id: string) => api('/api/wallpaper', { preset: id });
+
 const MAX_BYTES = 900 * 1024;
 
 /** Shrink a photo so it is light to store and quick to load on a phone. */
