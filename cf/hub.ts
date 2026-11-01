@@ -7,6 +7,7 @@ import { data, messageIndex, initStore, save, addMessage as storeAdd, messagesFo
 import { ENV, BUCKET, setEnv } from './runtime.ts';
 import { initR2, r2Enabled, signGet, signPut, head } from './r2.ts';
 import { initModeration, blockedMessage, moderationEnabled } from './moderation.ts';
+import { makeVapid, sendWebPush, type Vapid } from './push.ts';
 import { mediaRouter } from './media.ts';
 import { networkRouter } from './network.ts';
 import { friendsRouter } from './friends.ts';
@@ -60,7 +61,11 @@ async function verifyToken(secret: string, token: unknown): Promise<string | nul
   }
 }
 
+/** Who the notification server is told sent the pushes. */
+const PUSH_SUBJECT = 'https://kitechat-test.nexussupport-h2.workers.dev';
+
 export class Hub extends DurableObject {
+  vapid: Vapid | null = null;
   buckets = new Map<string, { count: number; reset: number }>();
   routers: any[] = [];
   sweepers: (() => Promise<void>)[] = [];
@@ -83,6 +88,12 @@ export class Hub extends DurableObject {
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
     ctx.blockConcurrencyWhile(async () => {
       await initStore(ctx.storage);
+      // Notification keys: made once, then kept.
+      this.vapid = ((await ctx.storage.get('x:vapid')) as Vapid | undefined) ?? null;
+      if (!this.vapid) {
+        this.vapid = await makeVapid();
+        await ctx.storage.put('x:vapid', this.vapid);
+      }
       this.syncAdminFriends();
       this.syncBroadcasts();
       // Pictures, files, profiles and Kite Network (the same code that runs on Render).
@@ -107,12 +118,42 @@ export class Hub extends DurableObject {
       };
       const areFriends = (a: string, b: string) => this.areFriends(a, b);
       const net = networkRouter({ io, requireAuth, areFriends, isAdmin: (u: User) => u.userId === this.adminId });
-      const media = mediaRouter({ io, requireAuth, areFriends, isOnline: (id: string) => this.isOnline(id), notifyOffline: () => {} });
+      const media = mediaRouter({
+        io,
+        requireAuth,
+        areFriends,
+        isOnline: (id: string) => this.isOnline(id),
+        notifyOffline: (recipientId: string, senderId: string) => {
+          if (!this.isOnline(recipientId)) this.pushTo(recipientId, { kind: 'message', title: this.users[senderId]?.name ?? 'KiteChat', body: 'Sent you a file', tag: 'msg-' + senderId });
+        }
+      });
       const friends = friendsRouter({ io, requireAuth, friendView: (u: User) => this.friendView(u), photoUrl: (u: User) => this.photoUrlOf(u) });
       this.routers = [net, friends, media];
       if (media.sweep) this.sweepers.push(media.sweep);
       if (!(await ctx.storage.getAlarm())) await ctx.storage.setAlarm(Date.now() + 10 * 60_000);
     });
+  }
+
+  /** Sends a closed-app notification to every phone this person has allowed notifications on. */
+  pushTo(userId: string, message: { kind: 'message' | 'call'; title: string; body: string; tag: string }, urgent = false) {
+    const u = this.users[userId];
+    const v = this.vapid;
+    if (!u?.pushSubs?.length || !v) return;
+    this.ctx.waitUntil(
+      (async () => {
+        const dead = new Set<string>();
+        await Promise.all(
+          (u.pushSubs ?? []).map(async s => {
+            const r = await sendWebPush(s, message, v, PUSH_SUBJECT, { ttl: urgent ? 45 : 86400, urgent });
+            if (r === 'gone') dead.add(s.endpoint);
+          })
+        );
+        if (dead.size) {
+          u.pushSubs = (u.pushSubs ?? []).filter(s => !dead.has(s.endpoint));
+          this.saveUser(u);
+        }
+      })()
+    );
   }
 
   /** Every 10 minutes: remove expired stories and shared files. */
@@ -174,7 +215,7 @@ export class Hub extends DurableObject {
   }
   // ---------- calls ----------
 
-  calls = new Map<string, { callerId: string; calleeId: string }>();
+  calls = new Map<string, { callerId: string; calleeId: string; type?: 'audio' | 'video' }>();
   iceCache: { at: number; servers: any[] } | null = null;
 
   /** Free STUN, plus Cloudflare's relay (TURN) when its keys are set, so calls also work on mobile data. */
@@ -199,7 +240,7 @@ export class Hub extends DurableObject {
     }
   }
 
-  attOf(ws: WebSocket): { uid: string; cid: string; roomId?: string; call?: { callerId: string; calleeId: string } } {
+  attOf(ws: WebSocket): { uid: string; cid: string; roomId?: string; call?: { callerId: string; calleeId: string; type?: 'audio' | 'video' } } {
     return (ws.deserializeAttachment() as any) ?? {};
   }
   roomMembers(roomId: string): WebSocket[] {
@@ -454,7 +495,18 @@ export class Hub extends DurableObject {
 
     if (req.method === 'GET' && path === '/api/messages') return json({ messages: this.messagesFor(me.userId) });
 
-    if (req.method === 'GET' && path === '/api/push/key') return json({ key: null }); // notifications: a later phase
+    if (req.method === 'GET' && path === '/api/push/key') return json({ key: this.vapid?.pub ?? null });
+    if (req.method === 'POST' && path === '/api/push/subscribe') {
+      const sub = body?.subscription;
+      if (!sub || typeof sub.endpoint !== 'string' || !/^https:\/\//.test(sub.endpoint) || typeof sub.keys?.p256dh !== 'string' || typeof sub.keys?.auth !== 'string') {
+        return err('Invalid subscription', 400);
+      }
+      const list = (me.pushSubs ?? []).filter(s => s.endpoint !== sub.endpoint);
+      list.push({ endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } });
+      me.pushSubs = list.slice(-5);
+      this.saveUser(me);
+      return json({ ok: true });
+    }
     if (path.startsWith('/api/push/')) return json({ ok: true });
 
     if (req.method === 'GET' && path === '/api/ice') {
@@ -502,6 +554,7 @@ export class Hub extends DurableObject {
         };
         this.addMessage(msg);
         this.emitTo([u.userId, me.userId], 'chat-message', msg);
+        if (!this.isOnline(u.userId)) this.pushTo(u.userId, { kind: 'message', title: 'System Broadcast', body: 'New update from Kite', tag: 'msg-' + me.userId });
         sent++;
       }
       return json({ sent });
@@ -629,6 +682,7 @@ export class Hub extends DurableObject {
         };
         this.addMessage(msg);
         this.emitTo([recipientId, me.userId], 'chat-message', msg);
+        if (!this.isOnline(recipientId)) this.pushTo(recipientId, { kind: 'message', title: me.name, body: 'New message', tag: 'msg-' + me.userId });
         return;
       }
       case 'mark-messages-read': {
@@ -670,12 +724,18 @@ export class Hub extends DurableObject {
         if (!this.areFriends(me.userId, recipientId)) return reply({ ok: false, error: 'Not a friend' });
         if (recipientId === this.adminId) return reply({ ok: false, error: 'Calls are not available in System Broadcast' });
         const callee = this.users[recipientId];
-        if (!this.isOnline(recipientId)) {
-          return reply({ ok: false, error: `${callee.name} is offline. Calls to closed apps are not available in the test copy yet` });
+        const offline = !this.isOnline(recipientId);
+        if (offline && !callee.pushSubs?.length) {
+          return reply({ ok: false, error: `${callee.name} is offline and has not allowed notifications, so cannot be called now` });
         }
         if (this.userInRoom(recipientId)) return reply({ ok: false, error: `${callee.name} is busy` });
         if (this.callOf(roomId)) return reply({ ok: false, error: 'Invalid call' });
-        this.calls.set(roomId, { callerId: me.userId, calleeId: recipientId });
+        const callType = type === 'audio' ? 'audio' : 'video';
+        this.calls.set(roomId, { callerId: me.userId, calleeId: recipientId, type: callType });
+        // The callee's app is closed: wake the phone. The call rings when they open the notification.
+        if (offline) {
+          this.pushTo(recipientId, { kind: 'call', title: `${me.name} is calling`, body: callType === 'audio' ? 'Incoming voice call. Tap to answer.' : 'Incoming video call. Tap to answer.', tag: 'call-' + roomId }, true);
+        }
         this.emitTo([recipientId], 'incoming-call', {
           roomId,
           callerId: me.userId,
@@ -683,6 +743,21 @@ export class Hub extends DurableObject {
           type: type === 'audio' ? 'audio' : 'video'
         });
         return reply({ ok: true });
+      }
+      case 'check-calls': {
+        // Someone opened the app (maybe from a call notification): ring for any call still waiting for them.
+        for (const w of this.ctx.getWebSockets()) {
+          const a = this.attOf(w);
+          if (!a.roomId || !a.call || a.call.calleeId !== me.userId) continue;
+          if (this.roomMembers(a.roomId).length !== 1) continue;
+          this.emitTo([me.userId], 'incoming-call', {
+            roomId: a.roomId,
+            callerId: a.call.callerId,
+            callerName: this.users[a.call.callerId]?.name ?? 'Someone',
+            type: a.call.type === 'audio' ? 'audio' : 'video'
+          });
+        }
+        return;
       }
       case 'call-decline': {
         const call = typeof d.roomId === 'string' ? this.callOf(d.roomId) : undefined;

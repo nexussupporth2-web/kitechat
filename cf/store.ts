@@ -35,6 +35,7 @@ export async function initStore(st: any): Promise<void> {
   messageIndex.clear();
   const all: Map<string, any> = await st.list();
   for (const [k, v] of all) {
+    if (k.startsWith('x:')) continue; // server-only keys (for example the notification keys) are not records
     saved.set(k, JSON.stringify(v));
     if (k.startsWith('u:')) data.users[k.slice(2)] = v;
     else if (k.startsWith('m:')) data.messages.push(v);
