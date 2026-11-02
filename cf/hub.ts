@@ -61,6 +61,12 @@ async function verifyToken(secret: string, token: unknown): Promise<string | nul
   }
 }
 
+/** Languages people can translate into (code -> name). */
+const LANGS: Record<string, string> = {
+  en: 'English', hi: 'Hindi', bn: 'Bengali', mr: 'Marathi', gu: 'Gujarati', ta: 'Tamil', te: 'Telugu', kn: 'Kannada', ml: 'Malayalam', pa: 'Punjabi', ur: 'Urdu',
+  es: 'Spanish', fr: 'French', de: 'German', pt: 'Portuguese', ru: 'Russian', ar: 'Arabic', zh: 'Chinese', ja: 'Japanese', ko: 'Korean'
+};
+
 /** Who the notification server is told sent the pushes. */
 const PUSH_SUBJECT = 'https://kitechat-test.nexussupport-h2.workers.dev';
 
@@ -496,6 +502,40 @@ export class Hub extends DurableObject {
     if (req.method === 'GET' && path === '/api/messages') return json({ messages: this.messagesFor(me.userId) });
 
     if (req.method === 'GET' && path === '/api/push/key') return json({ key: this.vapid?.pub ?? null });
+    if (req.method === 'POST' && path === '/api/translate') {
+      const text = typeof body?.text === 'string' ? body.text.trim().slice(0, 2000) : '';
+      const to = typeof body?.to === 'string' ? body.to : '';
+      const name = LANGS[to];
+      if (!text || !name) return err('Invalid request', 400);
+      if (!this.rateLimit(req, '/api/translate', 90, 60_000)) return err('Too many translations. Wait a moment.', 429);
+      let out = '';
+      const ai = (this.env as any).AI;
+      if (ai) {
+        try {
+          const r = await ai.run('@cf/meta/llama-3.1-8b-instruct', {
+            messages: [
+              { role: 'system', content: `You are a translator. Translate the user's message into ${name}. Keep symbols such as * _ ~ \` unchanged. If it is already in ${name}, return it as it is. Reply with the translation only, no notes, no quotes.` },
+              { role: 'user', content: text }
+            ],
+            max_tokens: 900
+          });
+          out = String(r?.response ?? '').trim();
+        } catch (e) {
+          console.error('translate (AI) failed', e);
+        }
+      }
+      if (!out) {
+        try {
+          const r = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(text.slice(0, 450))}&langpair=${encodeURIComponent('Autodetect|' + to)}`);
+          const j: any = await r.json();
+          out = String(j?.responseData?.translatedText ?? '').trim();
+        } catch (e) {
+          console.error('translate (fallback) failed', e);
+        }
+      }
+      if (!out) return err('Could not translate right now', 503);
+      return json({ text: out });
+    }
     if (req.method === 'POST' && path === '/api/style') {
       const hex = (v: unknown) => (typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v) ? v.toLowerCase() : undefined);
       const font = typeof body?.font === 'string' && ['nunito', 'lora', 'caveat', 'poppins'].includes(body.font) ? body.font : undefined;

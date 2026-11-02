@@ -13,5 +13,6 @@
   "vars": { "R2_BUCKET": "kitechat" },
   "durable_objects": { "bindings": [{ "name": "HUB", "class_name": "Hub" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Hub"] }],
+  "ai": { "binding": "AI" },
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "kitechat" }]
 }
