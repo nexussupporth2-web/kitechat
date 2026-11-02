@@ -37,11 +37,13 @@ export default function ProfileSettings({ userId, onChanged }: Props) {
   const [biz, setBiz] = useState<Business | null>(null);
   const [error, setError] = useState('');
   const [editing, setEditing] = useState(false);
+  const [hasStatus, setHasStatus] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const r = await api<{ user: Me; business: Business }>(`/api/profile/${encodeURIComponent(userId)}?lite=1`);
+      const r = await api<{ user: Me; business: Business; stats?: { status?: number } }>(`/api/profile/${encodeURIComponent(userId)}?lite=1`);
       setMe(r.user);
+      setHasStatus((r.stats?.status ?? 0) > 0);
       setBiz(r.business);
       setError('');
       return r.user;
@@ -94,7 +96,7 @@ export default function ProfileSettings({ userId, onChanged }: Props) {
           </button>
         </div>
         <div className="relative z-10 flex flex-col items-center px-4 -mt-[4.5rem]">
-          <Ring me={me} />
+          <Ring me={me} active={hasStatus} />
           <h2 className="mt-5 text-xl font-semibold text-white text-center break-words max-w-full">{me.name}</h2>
           <p className="text-sm text-slate-400">@{me.handle ?? me.userId.toLowerCase()}</p>
           {me.category && <span className="mt-3 px-3 py-1 rounded-full bg-slate-800 text-xs text-slate-300">{me.category}</span>}
@@ -111,10 +113,10 @@ export default function ProfileSettings({ userId, onChanged }: Props) {
   );
 }
 
-/** Big gradient ring around the profile picture (or the first letter of the name). */
-function Ring({ me, size = 'w-36 h-36', text = 'text-5xl' }: { me: Pick<Me, 'photoUrl' | 'avatar'>; size?: string; text?: string }) {
+/** Ring around the profile picture. It is coloured and glows only while the person has a live status (story). */
+function Ring({ me, size = 'w-36 h-36', text = 'text-5xl', active = false }: { me: Pick<Me, 'photoUrl' | 'avatar'>; size?: string; text?: string; active?: boolean }) {
   return (
-    <div className={`${size} rounded-full p-1.5 bg-gradient-to-tr from-amber-400 via-rose-400 to-indigo-400 shadow-lg shadow-rose-400/30`}>
+    <div className={`${size} rounded-full p-1.5 ${active ? 'status-ring bg-gradient-to-tr from-amber-400 via-rose-400 to-indigo-400' : 'bg-slate-800'}`}>
       <div className="w-full h-full rounded-full bg-slate-950 p-1.5">
         {me.photoUrl ? (
           <img src={me.photoUrl} alt="" className="w-full h-full rounded-full object-cover" />
