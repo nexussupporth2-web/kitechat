@@ -1,3 +1,4 @@
+import PeopleStrip from './PeopleStrip.tsx';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ArrowLeft, Check, MessageSquare, Play, Plus, Trash2, UserPlus, X } from 'lucide-react';
 import { api } from './api.ts';
@@ -266,11 +267,13 @@ export default function Profile({ userId, isMe, onBack, onMessage, onFriendsChan
           {isMe && <p className="mt-2 text-[11px] text-slate-500 text-center">Feed: up to {data.caps.image} photos and {data.caps.video} videos (30 s). Status: up to 1, disappears after 24 hours. Adding more replaces the oldest.</p>}
         </div>
 
-        <div className="mx-4 mt-5 rounded-[2rem] bg-slate-800/70 flex items-center py-5">
+        {isMe && <PeopleStrip onChanged={onFriendsChanged} />}
+
+        <div className="mx-4 mt-5 rounded-full bg-slate-800/70 flex items-center py-2.5">
           {stats.map(([n, label], i) => (
-            <div key={label} className={`flex-1 text-center ${i > 0 ? 'border-l border-slate-600/50' : ''}`}>
-              <div className="text-2xl font-semibold text-white">{n}</div>
-              <div className="text-sm text-slate-400">{label}</div>
+            <div key={label} className={`flex-1 flex items-baseline justify-center gap-2 ${i > 0 ? 'border-l border-slate-600/50' : ''}`}>
+              <span className="text-xl font-semibold text-white">{n}</span>
+              <span className="text-sm text-slate-400">{label}</span>
             </div>
           ))}
         </div>
