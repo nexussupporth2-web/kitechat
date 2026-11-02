@@ -103,6 +103,14 @@ export interface Message {
   bcMime?: string;
   /** Pinned to the top of the chat (up to 3 per chat). */
   pinned?: boolean;
+  /** The message this one answers (a short copy of it is kept). */
+  replyTo?: { id: string; senderId: string; text: string };
+  forwarded?: boolean;
+  edited?: boolean;
+  /** Deleted for everyone: only a note is shown. */
+  deleted?: boolean;
+  /** People who deleted it just for themselves. */
+  hiddenFor?: string[];
 }
 
 export interface Post {
