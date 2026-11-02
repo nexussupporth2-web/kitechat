@@ -45,7 +45,7 @@ const Row = ({ icon, children }: { icon: React.ReactNode; children: React.ReactN
 const link = 'text-cyan-400 underline underline-offset-2';
 
 /** Read-only business profile: cover, details, hours, links and the product catalogue. */
-export default function BusinessInfo({ b, hideCover }: { b: Business; hideCover?: boolean }) {
+export default function BusinessInfo({ b, hideCover, hideSocials }: { b: Business; hideCover?: boolean; hideSocials?: boolean }) {
   const has = b.businessName || b.description || b.address || b.mapLink || b.email || b.website || b.phone || b.about || b.coverUrl || b.products.length || Object.keys(b.socials).length;
   if (!has) return null;
   const today = (new Date().getDay() + 6) % 7;
@@ -102,7 +102,7 @@ export default function BusinessInfo({ b, hideCover }: { b: Business; hideCover?
           </div>
         )}
 
-        {Object.keys(b.socials).length > 0 && (
+        {!hideSocials && Object.keys(b.socials).length > 0 && (
           <div className="flex flex-wrap gap-2">
             {SOCIALS.filter(([k]) => b.socials[k]).map(([k, label]) => (
               <a key={k} href={b.socials[k]} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 rounded-full bg-slate-800 text-xs text-slate-200 hover:bg-slate-700">

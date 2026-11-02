@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Camera, Check, Image as ImageIcon, Pencil, Smile, Trash2, X } from 'lucide-react';
 import { api, uploadToStorage } from './api.ts';
+import { Facebook, Instagram, Linkedin, MessageCircle, Twitter, Youtube } from 'lucide-react';
 import BusinessInfo,{ BIZ_CATEGORIES, DAYS, SOCIALS, defaultHours, type Business } from './BusinessInfo.tsx';
 
 interface Me {
@@ -96,10 +97,13 @@ export default function ProfileSettings({ userId, onChanged }: Props) {
           </button>
         </div>
         <div className="relative z-10 flex flex-col items-center px-4 -mt-[4.5rem]">
-          <Ring me={me} active={hasStatus} />
+          <div className="relative">
+            <Ring me={me} active={hasStatus} />
+            <span className="absolute bottom-2 right-2 w-7 h-7 rounded-full border-4 border-slate-950 bg-emerald-500" title="Online" aria-label="Online" />
+          </div>
           <h2 className="mt-5 text-xl font-semibold text-white text-center break-words max-w-full">{me.name}</h2>
           <p className="text-sm text-slate-400">@{me.handle ?? me.userId.toLowerCase()}</p>
-          {me.category && <span className="mt-3 px-3 py-1 rounded-full bg-slate-800 text-xs text-slate-300">{me.category}</span>}
+          <SocialIcons socials={biz.socials} />
           {(!biz.phone || !biz.businessName || !biz.bizCategory) && (
             <button onClick={() => setEditing(true)} className="mt-4 w-full max-w-sm rounded-2xl bg-amber-400/15 border border-amber-400/40 px-4 py-3 text-sm text-amber-300 text-left">
               Complete your business details (phone number, business name and category are required). Tap to fill them in.
@@ -107,8 +111,44 @@ export default function ProfileSettings({ userId, onChanged }: Props) {
           )}
           {error && <p role="alert" className="mt-3 text-xs text-rose-400">{error}</p>}
         </div>
-        <BusinessInfo b={{ ...biz, phone: biz.phone }} hideCover />
+        <BusinessInfo b={{ ...biz, phone: biz.phone }} hideCover hideSocials />
       </div>
+    </div>
+  );
+}
+
+const SOCIAL_ICONS: Record<string, { Icon: typeof Instagram; label: string; bg: string }> = {
+  instagram: { Icon: Instagram, label: 'Instagram', bg: 'linear-gradient(45deg, #f9ce34, #ee2a7b 55%, #6228d7)' },
+  facebook: { Icon: Facebook, label: 'Facebook', bg: '#1877f2' },
+  youtube: { Icon: Youtube, label: 'YouTube', bg: '#ff0000' },
+  x: { Icon: Twitter, label: 'X', bg: '#000000' },
+  linkedin: { Icon: Linkedin, label: 'LinkedIn', bg: '#0a66c2' },
+  whatsapp: { Icon: MessageCircle, label: 'WhatsApp', bg: '#25d366' }
+};
+
+/** Small square icons in each network's own colour, centred on one line (six fit even on a narrow phone). Only filled-in accounts show. */
+function SocialIcons({ socials }: { socials: Record<string, string> }) {
+  const items = SOCIALS.filter(([k]) => socials[k] && SOCIAL_ICONS[k]);
+  if (items.length === 0) return null;
+  return (
+    <div className="mt-3 flex flex-nowrap items-center justify-center gap-2.5">
+      {items.map(([k]) => {
+        const { Icon, label, bg } = SOCIAL_ICONS[k];
+        return (
+          <a
+            key={k}
+            href={socials[k]}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={label}
+            title={label}
+            style={{ background: bg }}
+            className="w-9 h-9 shrink-0 aspect-square rounded-lg text-white flex items-center justify-center shadow-sm"
+          >
+            <Icon className="w-5 h-5" strokeWidth={2} />
+          </a>
+        );
+      })}
     </div>
   );
 }
@@ -143,6 +183,9 @@ function Editor({ me, biz, onClose, onSaved, onPhotoChanged }: { me: Me; biz: Bu
   const [showPhone, setShowPhone] = useState(biz.showPhone);
   const [businessName, setBusinessName] = useState(biz.businessName);
   const [bizCategory, setBizCategory] = useState(biz.bizCategory);
+  // A category that is not in the list is the person's own.
+  const [customMode, setCustomMode] = useState(!!biz.bizCategory && !BIZ_CATEGORIES.includes(biz.bizCategory));
+  const [customCat, setCustomCat] = useState(!!biz.bizCategory && !BIZ_CATEGORIES.includes(biz.bizCategory) ? biz.bizCategory : '');
   const [description, setDescription] = useState(biz.description);
   const [address, setAddress] = useState(biz.address);
   const [mapLink, setMapLink] = useState(biz.mapLink);
@@ -444,12 +487,38 @@ function Editor({ me, biz, onClose, onSaved, onPhotoChanged }: { me: Me; biz: Bu
           </label>
           <label className="block">
             <span className="text-xs text-slate-400 mb-1.5 block">Business category *</span>
-            <select value={bizCategory} onChange={e => setBizCategory(e.target.value)} className={inputCls}>
+            <select
+              value={customMode ? '__custom__' : bizCategory}
+              onChange={e => {
+                if (e.target.value === '__custom__') {
+                  setCustomMode(true);
+                  setBizCategory(customCat.trim());
+                } else {
+                  setCustomMode(false);
+                  setBizCategory(e.target.value);
+                }
+              }}
+              className={inputCls}
+            >
               <option value="">Choose a category</option>
               {BIZ_CATEGORIES.map(c => (
                 <option key={c} value={c}>{c}</option>
               ))}
+              <option value="__custom__">➕ My category is not in the list</option>
             </select>
+            {customMode && (
+              <input
+                value={customCat}
+                onChange={e => {
+                  const v = e.target.value.slice(0, 40);
+                  setCustomCat(v);
+                  setBizCategory(v.trim());
+                }}
+                className={`${inputCls} mt-2`}
+                placeholder="Type your own category (for example, Photography Studio)"
+                maxLength={40}
+              />
+            )}
           </label>
           {missing && <p className="text-[11px] text-amber-300">Fill in the phone number, business name and category to save.</p>}
 
