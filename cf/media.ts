@@ -425,8 +425,10 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
       me.businessName = v;
     }
     if (b.bizCategory !== undefined) {
-      if (!BIZ_CATEGORIES.includes(b.bizCategory)) return bad('Choose a business category');
-      me.bizCategory = b.bizCategory;
+      // The list is only a suggestion: people can also write their own category.
+      const cat = text(b.bizCategory, 40);
+      if (!cat) return bad('Choose a business category');
+      me.bizCategory = cat;
     }
     const optional = (field: 'bizDescription' | 'bizAddress' | 'about', v: unknown, max: number) => {
       const t = text(v, max);
