@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Bold, Code, Download, FileText, Italic, MessageSquare, Paperclip, Phone, Pin, Strikethrough, Video } from 'lucide-react';
+import { ArrowLeft, Bold, Code, Download, FileText, Italic, Languages, MessageSquare, Paperclip, Phone, Pin, Strikethrough, Video } from 'lucide-react';
 import Avatar from './Avatar.tsx';
 import KiteIcon from './KiteIcon.tsx';
 import { formatBytes } from './api.ts';
 import { formatMessage } from './format.tsx';
 import { loadWallOpacity, onWallOpacityChange, wallpaperBackground } from './wallpaper.ts';
+import { LANGUAGES, getChatLang, setChatLang, translateText } from './translate.ts';
 import { ensureFont, FONTS, seeingStyles } from './prefs.ts';
 import { phaseLabel, type Phase, type ProgressFn } from './media.ts';
 import type { ChatMessage, Friend } from './types.ts';
@@ -82,6 +83,20 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
     }
   };
   const [pickerFor, setPickerFor] = useState<string | null>(null);
+  // Translating friend's messages into a language chosen for this chat.
+  const [lang, setLang] = useState(() => getChatLang(friend.userId));
+  const [langOpen, setLangOpen] = useState(false);
+  const [translated, setTranslated] = useState<Record<string, string>>({});
+  const [showOriginal, setShowOriginal] = useState<Record<string, boolean>>({});
+  const [transNote, setTransNote] = useState('');
+  const chooseLang = (code: string) => {
+    setLang(code);
+    setChatLang(friend.userId, code);
+    setTranslated({});
+    setShowOriginal({});
+    setTransNote('');
+    setLangOpen(false);
+  };
   const [pinNote, setPinNote] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -90,6 +105,31 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
     () => messages.filter(m => m.senderId === friend.userId || m.recipientId === friend.userId),
     [messages, friend.userId]
   );
+
+  useEffect(() => {
+    if (!lang) return;
+    let stop = false;
+    (async () => {
+      for (const m of convo) {
+        if (stop) return;
+        if (m.senderId === me || m.file || !m.message || translated[m.id] !== undefined) continue;
+        try {
+          const t = await translateText(m.id, m.message, lang);
+          if (stop) return;
+          setTranslated(p => ({ ...p, [m.id]: t }));
+          setTransNote('');
+        } catch (e) {
+          if (stop) return;
+          setTranslated(p => ({ ...p, [m.id]: '' }));
+          setTransNote(e instanceof Error ? e.message : 'Could not translate');
+        }
+      }
+    })();
+    return () => {
+      stop = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lang, convo]);
 
   const pinned = useMemo(() => convo.filter(m => m.pinned).slice(-3), [convo]);
 
@@ -181,7 +221,24 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
           </div>
           </button>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 relative">
+          <button
+            onClick={() => setLangOpen(o => !o)}
+            className={`${iconBtn} ${lang ? 'ring-2 ring-cyan-400' : ''}`}
+            title={lang ? 'Translating incoming messages' : 'Translate incoming messages'}
+            aria-label="Translate incoming messages"
+          >
+            <Languages className="w-4 h-4" />
+          </button>
+          {langOpen && (
+            <div className="absolute right-0 top-12 z-40 w-60 max-h-80 overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 shadow-xl p-2">
+              <p className="px-2 py-1 text-[11px] text-slate-400">Show incoming messages in:</p>
+              <button onClick={() => chooseLang('')} className={`w-full text-left px-3 py-2 rounded-lg text-sm ${!lang ? 'bg-slate-800 text-white' : 'text-slate-200 hover:bg-slate-800'}`}>Off (original language)</button>
+              {LANGUAGES.map(([code, name]) => (
+                <button key={code} onClick={() => chooseLang(code)} className={`w-full text-left px-3 py-2 rounded-lg text-sm ${lang === code ? 'bg-slate-800 text-white' : 'text-slate-200 hover:bg-slate-800'}`}>{name}</button>
+              ))}
+            </div>
+          )}
           {!friend.isAdmin && (
             <>
               <button onClick={() => onCall('audio')} disabled={callDisabled} className={iconBtn} title={callHint || 'Audio call'}>
@@ -195,6 +252,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
         </div>
       </div>
 
+      {transNote && <p role="status" className="shrink-0 px-4 py-1.5 text-[11px] text-amber-300 bg-slate-900/80 border-b border-slate-800">{transNote}</p>}
       {(pinned.length > 0 || pinNote) && (
         <div className="shrink-0 border-b border-slate-800 bg-slate-900/80 px-4 py-2 space-y-1">
           {pinned.map(m => (
@@ -266,7 +324,22 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
                         )}
                       </div>
                     ) : (
-                      formatMessage(msg.message)
+                      formatMessage(!mine && lang && translated[msg.id] && !showOriginal[msg.id] ? translated[msg.id] : msg.message)
+                    )}
+                    {!mine && lang && !msg.file && msg.message && (
+                      translated[msg.id] ? (
+                        <button
+                          onClick={e => {
+                            e.stopPropagation();
+                            setShowOriginal(p => ({ ...p, [msg.id]: !p[msg.id] }));
+                          }}
+                          className="mt-0.5 block text-[11px] text-slate-400 underline underline-offset-2"
+                        >
+                          {showOriginal[msg.id] ? 'Show translation' : 'Translated · show original'}
+                        </button>
+                      ) : translated[msg.id] === undefined ? (
+                        <span className="mt-0.5 block text-[11px] text-slate-500">Translating…</span>
+                      ) : null
                     )}
                     {reactions.length > 0 && (
                       <div className="flex flex-wrap gap-1 mt-1.5 -mb-0.5">
