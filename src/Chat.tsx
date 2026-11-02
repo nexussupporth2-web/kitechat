@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ArrowLeft, Bold, Code, Copy, CornerUpLeft, Download, FileText, Forward, Italic, Languages, Pencil, Trash2, MessageSquare, Paperclip, Phone, Pin, Strikethrough, Video, X } from 'lucide-react';
 import Avatar from './Avatar.tsx';
 import KiteIcon from './KiteIcon.tsx';
@@ -88,6 +89,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
     }
   };
   const [pickerFor, setPickerFor] = useState<string | null>(null);
+  const [pickerTop, setPickerTop] = useState(80);
   // Long-press menu: Copy, Reply, Forward, Edit, Delete.
   const [menuFor, setMenuFor] = useState<ChatMessage | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -365,6 +367,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
         className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-3 chat-wallpaper"
         style={{ backgroundImage: wallpaperBackground(wallpaperUrl, wallOpacity) }}
         onClick={() => setPickerFor(null)}
+        onScroll={() => setPickerFor(null)}
       >
         {convo.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-slate-500 text-center">
@@ -393,9 +396,14 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
                         pressFired.current = false;
                         return;
                       }
-                      if (!msg.deleted) setPickerFor(pickerFor === msg.id ? null : msg.id);
+                      if (!msg.deleted) {
+                        // The reaction bar floats above everything, just over the message.
+                        const r = e.currentTarget.getBoundingClientRect();
+                        setPickerTop(Math.max(72, Math.min(r.top - 48, window.innerHeight - 120)));
+                        setPickerFor(pickerFor === msg.id ? null : msg.id);
+                      }
                     }}
-                    style={mine ? undefined : fsStyle}
+                    style={mine ? { WebkitUserSelect: 'none', userSelect: 'none', WebkitTouchCallout: 'none' } : { ...fsStyle, WebkitUserSelect: 'none', userSelect: 'none', WebkitTouchCallout: 'none' }}
                     className={`msg-text py-1 cursor-pointer select-none [-webkit-touch-callout:none] break-words text-left ${mine ? 'msg-mine' : 'msg-theirs'}`}
                   >
                     {msg.broadcast && <div className="text-[10px] font-semibold uppercase tracking-wider opacity-70 mb-1">📢 System Broadcast</div>}
@@ -466,9 +474,10 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
                       </div>
                     )}
                   </div>
-                  {pickerFor === msg.id && (
+                  {pickerFor === msg.id && createPortal(
                     <div
-                      className={`absolute -top-9 ${mine ? 'right-0' : 'left-0'} flex items-center gap-1 bg-slate-900 border border-slate-700 px-2 py-1 rounded-full shadow-lg z-10`}
+                      style={{ top: pickerTop }}
+                      className={`fixed ${mine ? 'right-3' : 'left-3'} flex items-center gap-1 bg-slate-900 border border-slate-700 px-3 py-1.5 rounded-full shadow-xl z-[100] text-lg`}
                       onClick={e => e.stopPropagation()}
                     >
                       <button
@@ -494,7 +503,8 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
                           {emoji}
                         </button>
                       ))}
-                    </div>
+                    </div>,
+                    document.body
                   )}
                 </div>
                 <div className="flex items-center gap-2 mt-1">
