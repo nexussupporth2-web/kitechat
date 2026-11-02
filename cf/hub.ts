@@ -728,6 +728,12 @@ export class Hub extends DurableObject {
           status: this.isOnline(recipientId) ? 'received' : 'sent',
           reactions: {}
         };
+        if (d.forwarded === true) msg.forwarded = true;
+        // An answer to an earlier message in this same chat: keep a short copy of what it answered.
+        const orig = typeof d.replyTo === 'string' ? this.index.get(d.replyTo) : undefined;
+        if (orig && !orig.deleted && ((orig.senderId === me.userId && orig.recipientId === recipientId) || (orig.senderId === recipientId && orig.recipientId === me.userId))) {
+          msg.replyTo = { id: orig.id, senderId: orig.senderId, text: (orig.file ? `File: ${orig.file.name}` : orig.message).slice(0, 120) };
+        }
         this.addMessage(msg);
         this.emitTo([recipientId, me.userId], 'chat-message', msg);
         if (!this.isOnline(recipientId)) this.pushTo(recipientId, { kind: 'message', title: me.name, body: 'New message', tag: 'msg-' + me.userId });
@@ -751,6 +757,39 @@ export class Hub extends DurableObject {
         const { recipientId, isTyping } = d;
         if (typeof recipientId !== 'string' || !this.areFriends(me.userId, recipientId)) return;
         this.emitTo([recipientId], 'typing', { senderId: me.userId, isTyping: !!isTyping });
+        return;
+      }
+      case 'edit-message': {
+        const { messageId, message } = d;
+        if (typeof messageId !== 'string' || typeof message !== 'string') return;
+        const msg = this.index.get(messageId);
+        const text = message.trim().slice(0, 2000);
+        if (!msg || !text || msg.senderId !== me.userId || msg.file || msg.broadcast || msg.deleted) return;
+        if (text === msg.message) return;
+        msg.message = text;
+        msg.edited = true;
+        this.saveMsg(msg);
+        this.emitTo([msg.senderId, msg.recipientId], 'message-edited', { messageId, message: text });
+        return;
+      }
+      case 'delete-message': {
+        const { messageId, scope } = d;
+        if (typeof messageId !== 'string') return;
+        const msg = this.index.get(messageId);
+        if (!msg || (msg.senderId !== me.userId && msg.recipientId !== me.userId)) return;
+        if (scope === 'all') {
+          if (msg.senderId !== me.userId || msg.broadcast || msg.file) return;
+          msg.deleted = true;
+          msg.message = '';
+          msg.pinned = false;
+          msg.reactions = {};
+          this.saveMsg(msg);
+          this.emitTo([msg.senderId, msg.recipientId], 'message-deleted', { messageId, scope: 'all' });
+        } else {
+          msg.hiddenFor = [...new Set([...(msg.hiddenFor ?? []), me.userId])];
+          this.saveMsg(msg);
+          this.emitTo([me.userId], 'message-deleted', { messageId, scope: 'me', userId: me.userId });
+        }
         return;
       }
       case 'message-reaction': {
