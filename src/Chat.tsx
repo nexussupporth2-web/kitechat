@@ -86,6 +86,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
   // Translating friend's messages into a language chosen for this chat.
   const [lang, setLang] = useState(() => getChatLang(friend.userId));
   const [langOpen, setLangOpen] = useState(false);
+  const [callOpen, setCallOpen] = useState(false);
   const [translated, setTranslated] = useState<Record<string, string>>({});
   const [showOriginal, setShowOriginal] = useState<Record<string, boolean>>({});
   const [transNote, setTransNote] = useState('');
@@ -223,7 +224,10 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
         </div>
         <div className="flex items-center gap-2 relative">
           <button
-            onClick={() => setLangOpen(o => !o)}
+            onClick={() => {
+              setLangOpen(o => !o);
+              setCallOpen(false);
+            }}
             className={`${iconBtn} ${lang ? 'ring-2 ring-cyan-400' : ''}`}
             title={lang ? 'Translating incoming messages' : 'Translate incoming messages'}
             aria-label="Translate incoming messages"
@@ -241,12 +245,41 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
           )}
           {!friend.isAdmin && (
             <>
-              <button onClick={() => onCall('audio')} disabled={callDisabled} className={iconBtn} title={callHint || 'Audio call'}>
+              <button
+                onClick={() => {
+                  setCallOpen(o => !o);
+                  setLangOpen(false);
+                }}
+                disabled={callDisabled}
+                className={iconBtn}
+                title={callHint || 'Call'}
+                aria-label="Call"
+                aria-expanded={callOpen}
+              >
                 <Phone className="w-4 h-4" />
               </button>
-              <button onClick={() => onCall('video')} disabled={callDisabled} className={iconBtn} title={callHint || 'Video call'}>
-                <Video className="w-4 h-4" />
-              </button>
+              {callOpen && (
+                <div className="absolute right-0 top-12 z-40 w-48 rounded-2xl border border-slate-700 bg-slate-900 shadow-xl p-2">
+                  <button
+                    onClick={() => {
+                      setCallOpen(false);
+                      onCall('audio');
+                    }}
+                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-slate-100 hover:bg-slate-800"
+                  >
+                    <Phone className="w-4 h-4" /> Audio call
+                  </button>
+                  <button
+                    onClick={() => {
+                      setCallOpen(false);
+                      onCall('video');
+                    }}
+                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-slate-100 hover:bg-slate-800"
+                  >
+                    <Video className="w-4 h-4" /> Video call
+                  </button>
+                </div>
+              )}
             </>
           )}
         </div>
