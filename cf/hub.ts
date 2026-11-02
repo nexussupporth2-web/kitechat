@@ -64,7 +64,7 @@ async function verifyToken(secret: string, token: unknown): Promise<string | nul
 /** Languages people can translate into (code -> name). */
 const LANGS: Record<string, string> = {
   en: 'English', hi: 'Hindi', bn: 'Bengali', mr: 'Marathi', gu: 'Gujarati', ta: 'Tamil', te: 'Telugu', kn: 'Kannada', ml: 'Malayalam', pa: 'Punjabi', ur: 'Urdu',
-  es: 'Spanish', fr: 'French', de: 'German', pt: 'Portuguese', ru: 'Russian', ar: 'Arabic', zh: 'Chinese', ja: 'Japanese', ko: 'Korean'
+  es: 'Spanish', fr: 'French', de: 'German', pt: 'Portuguese', ru: 'Russian', ar: 'Arabic', zh: 'Chinese', ja: 'Japanese', ko: 'Korean', th: 'Thai', vi: 'Vietnamese'
 };
 
 /** Who the notification server is told sent the pushes. */
