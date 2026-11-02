@@ -41,6 +41,28 @@ export function friendsRouter({ io, requireAuth, friendView, photoUrl }: Deps) {
     return { ...friendView(other), photoUrl: await photoUrl(other) };
   }
 
+  /** Everyone on Kite (except you and the admin), for the "Suggested for you" strip. People who are not yet friends come first. */
+  router.get('/people', requireAuth, async (_req: any, res: any) => {
+    const me = res.locals.user as User;
+    tidy(me);
+    const now = Date.now();
+    const others = Object.values(data.users).filter(u => u.userId !== me.userId && !u.blocked && !(friendView(u) as any).isAdmin);
+    others.sort((a, b) => Number(me.friends.includes(a.userId)) - Number(me.friends.includes(b.userId)) || a.name.localeCompare(b.name));
+    const people = await Promise.all(
+      others.slice(0, 60).map(async u => ({
+        userId: u.userId,
+        name: u.name,
+        avatar: u.avatar,
+        handle: u.handle ?? null,
+        photoUrl: await photoUrl(u),
+        isOnline: !!(friendView(u) as any).isOnline,
+        state: me.friends.includes(u.userId) ? 'friends' : (me.reqOut ?? []).includes(u.userId) ? 'sent' : (me.reqIn ?? []).includes(u.userId) ? 'received' : 'none',
+        hasStatus: data.posts.some(p => p.ownerId === u.userId && p.kind === 'story' && (p.expiresAt == null || p.expiresAt > now))
+      }))
+    );
+    res.json({ people });
+  });
+
   router.get('/friends/requests', requireAuth, async (_req: any, res: any) => {
     const me = res.locals.user as User;
     tidy(me);
