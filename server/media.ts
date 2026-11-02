@@ -24,8 +24,8 @@ export const LIMITS = {
   coverBytes: 800 * 1024,
   maxProducts: 20,
   /** How many of each a user can keep. Adding one more removes the oldest. */
-  caps: { story: 2, reel: 10, albumImage: 10, albumVideo: 10 },
-  quotaBytes: 200 * MB
+  caps: { story: 1, reel: 5, albumImage: 5, albumVideo: 5 },
+  quotaBytes: 100 * MB
 };
 
 const IMAGE_TYPES: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
@@ -195,7 +195,7 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
         await remove(key).catch(() => {});
         return res.status(413).json({ error: 'File is over your limit' });
       }
-      const v = await checkUpload(me, key, info.type, 'post');
+      const v = await checkUpload(me, key, info.type, 'post', req.body?.frames);
       if (!v.ok) return res.status(v.status ?? 400).json({ error: v.error, blocked: v.blocked });
       // Keep only the newest few: when the limit is reached, the oldest one goes.
       const isImg = info.type in IMAGE_TYPES;
@@ -424,8 +424,10 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
       me.businessName = v;
     }
     if (b.bizCategory !== undefined) {
-      if (!BIZ_CATEGORIES.includes(b.bizCategory)) return bad('Choose a business category');
-      me.bizCategory = b.bizCategory;
+      // The list is only a suggestion: people can also write their own category.
+      const cat = text(b.bizCategory, 40);
+      if (!cat) return bad('Choose a business category');
+      me.bizCategory = cat;
     }
     const optional = (field: 'bizDescription' | 'bizAddress' | 'about', v: unknown, max: number) => {
       const t = text(v, max);
