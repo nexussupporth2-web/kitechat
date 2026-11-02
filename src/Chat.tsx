@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Bold, Code, Download, FileText, Italic, Languages, MessageSquare, Paperclip, Phone, Pin, Strikethrough, Video } from 'lucide-react';
+import { ArrowLeft, Bold, Code, Copy, CornerUpLeft, Download, FileText, Forward, Italic, Languages, Pencil, Trash2, MessageSquare, Paperclip, Phone, Pin, Strikethrough, Video, X } from 'lucide-react';
 import Avatar from './Avatar.tsx';
 import KiteIcon from './KiteIcon.tsx';
 import { formatBytes } from './api.ts';
@@ -22,7 +22,12 @@ interface Props {
   filesEnabled: boolean;
   onSendFile: (file: File, onProgress: ProgressFn) => Promise<void>;
   onDownload: (fileId: string) => Promise<void>;
-  onSend: (text: string) => void;
+  onSend: (text: string, replyTo?: string) => void;
+  onEdit: (messageId: string, text: string) => void;
+  onDelete: (messageId: string, scope: 'me' | 'all') => void;
+  /** Send a copy of a text message to another friend. */
+  onForward: (friendId: string, text: string) => void;
+  forwardTargets: Friend[];
   onTyping: (isTyping: boolean) => void;
   onReact: (messageId: string, emoji: string) => void;
   /** Pin or unpin a message. Returns an error text, or null when it worked. */
@@ -35,7 +40,7 @@ interface Props {
   readOnly?: boolean;
 }
 
-export default function Chat({ me, friend, messages, friendTyping, callDisabled, callHint, filesEnabled, onSendFile, onDownload, onSend, onTyping, onReact, onPin, onCall, onBack, onOpenProfile, wallpaperUrl, readOnly }: Props) {
+export default function Chat({ me, friend, messages, friendTyping, callDisabled, callHint, filesEnabled, onSendFile, onDownload, onSend, onEdit, onDelete, onForward, forwardTargets, onTyping, onReact, onPin, onCall, onBack, onOpenProfile, wallpaperUrl, readOnly }: Props) {
   const [input, setInput] = useState('');
   const [progress, setProgress] = useState<{ phase: Phase; p: number } | null>(null);
   const [fileError, setFileError] = useState('');
@@ -83,6 +88,54 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
     }
   };
   const [pickerFor, setPickerFor] = useState<string | null>(null);
+  // Long-press menu: Copy, Reply, Forward, Edit, Delete.
+  const [menuFor, setMenuFor] = useState<ChatMessage | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [forwarding, setForwarding] = useState<ChatMessage | null>(null);
+  const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
+  const [editing, setEditing] = useState<ChatMessage | null>(null);
+  const [menuNote, setMenuNote] = useState('');
+  const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pressStart = useRef<{ x: number; y: number } | null>(null);
+  const pressFired = useRef(false);
+  const cancelPress = () => {
+    if (pressTimer.current) clearTimeout(pressTimer.current);
+    pressTimer.current = null;
+  };
+  const startPress = (e: React.PointerEvent, msg: ChatMessage) => {
+    pressFired.current = false;
+    pressStart.current = { x: e.clientX, y: e.clientY };
+    cancelPress();
+    pressTimer.current = setTimeout(() => {
+      pressFired.current = true;
+      try {
+        navigator.vibrate?.(15);
+      } catch {
+        /* ignore */
+      }
+      setPickerFor(null);
+      setDeleting(false);
+      setMenuFor(msg);
+    }, 500);
+  };
+  const movePress = (e: React.PointerEvent) => {
+    const s = pressStart.current;
+    if (s && Math.hypot(e.clientX - s.x, e.clientY - s.y) > 10) cancelPress();
+  };
+  const copyText = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const t = document.createElement('textarea');
+      t.value = text;
+      document.body.appendChild(t);
+      t.select();
+      document.execCommand('copy');
+      t.remove();
+    }
+    setMenuNote('Copied');
+    setTimeout(() => setMenuNote(''), 1500);
+  };
   // Translating friend's messages into a language chosen for this chat.
   const [lang, setLang] = useState(() => getChatLang(friend.userId));
   const [langOpen, setLangOpen] = useState(false);
@@ -103,8 +156,8 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const convo = useMemo(
-    () => messages.filter(m => m.senderId === friend.userId || m.recipientId === friend.userId),
-    [messages, friend.userId]
+    () => messages.filter(m => (m.senderId === friend.userId || m.recipientId === friend.userId) && !m.hiddenFor?.includes(me)),
+    [messages, friend.userId, me]
   );
 
   useEffect(() => {
@@ -184,7 +237,13 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
     e.preventDefault();
     const text = input.trim();
     if (!text) return;
-    onSend(text);
+    if (editing) {
+      if (text !== editing.message) onEdit(editing.id, text);
+      setEditing(null);
+    } else {
+      onSend(text, replyingTo?.id);
+      setReplyingTo(null);
+    }
     setInput('');
     setHasSel(false);
     stopTyping();
@@ -322,16 +381,41 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
               <div key={msg.id} id={`msg-${msg.id}`} className={`flex flex-col ${mine ? 'items-end' : 'items-start'}`}>
                 <div className="relative max-w-[92%] sm:max-w-xl">
                   <div
+                    onPointerDown={e => startPress(e, msg)}
+                    onPointerMove={movePress}
+                    onPointerUp={cancelPress}
+                    onPointerLeave={cancelPress}
+                    onPointerCancel={cancelPress}
+                    onContextMenu={e => e.preventDefault()}
                     onClick={e => {
                       e.stopPropagation();
-                      setPickerFor(pickerFor === msg.id ? null : msg.id);
+                      if (pressFired.current) {
+                        pressFired.current = false;
+                        return;
+                      }
+                      if (!msg.deleted) setPickerFor(pickerFor === msg.id ? null : msg.id);
                     }}
                     style={mine ? undefined : fsStyle}
-                    className={`msg-text py-1 cursor-pointer break-words text-left ${mine ? 'msg-mine' : 'msg-theirs'}`}
+                    className={`msg-text py-1 cursor-pointer select-none [-webkit-touch-callout:none] break-words text-left ${mine ? 'msg-mine' : 'msg-theirs'}`}
                   >
                     {msg.broadcast && <div className="text-[10px] font-semibold uppercase tracking-wider opacity-70 mb-1">📢 System Broadcast</div>}
+                    {msg.forwarded && !msg.deleted && <div className="text-[11px] italic opacity-60 mb-0.5">↪ Forwarded</div>}
+                    {msg.replyTo && !msg.deleted && (
+                      <button
+                        type="button"
+                        onClick={e => {
+                          e.stopPropagation();
+                          document.getElementById(`msg-${msg.replyTo!.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        }}
+                        className="block w-full text-left mb-1 rounded-lg border-l-4 border-slate-500 bg-slate-900/60 px-2 py-1 text-[13px] leading-snug"
+                      >
+                        <span className="block text-[11px] font-semibold opacity-70">{msg.replyTo.senderId === me ? 'You' : friend.name}</span>
+                        <span className="block truncate opacity-80">{msg.replyTo.text}</span>
+                      </button>
+                    )}
+                    {msg.deleted && <div className="italic opacity-60 text-base">🚫 This message was deleted</div>}
                     {msg.file?.permanent && msg.message && <div className="mb-2 break-words">{formatMessage(msg.message)}</div>}
-                    {msg.file ? (
+                    {msg.deleted ? null : msg.file ? (
                       <div className="flex items-center gap-3 min-w-[12rem] text-sm rounded-xl border border-slate-700 bg-slate-900/70 px-3 py-2 text-slate-200">
                         <FileText className="w-8 h-8 shrink-0 opacity-80" />
                         <div className="min-w-0 flex-1">
@@ -359,7 +443,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
                     ) : (
                       formatMessage(!mine && lang && translated[msg.id] && !showOriginal[msg.id] ? translated[msg.id] : msg.message)
                     )}
-                    {!mine && lang && !msg.file && msg.message && (
+                    {!mine && lang && !msg.file && !msg.deleted && msg.message && (
                       translated[msg.id] ? (
                         <button
                           onClick={e => {
@@ -417,6 +501,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
                   <span className="text-[10px] text-slate-500">
                     {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </span>
+                  {msg.edited && !msg.deleted && <span className="text-[10px] text-slate-500 italic">edited</span>}
                   {mine && (
                     <div className="flex items-center gap-0.5" title={`Status: ${msg.status}`}>
                       <span className={dot(true)} />
@@ -447,6 +532,112 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
         </div>
       )}
 
+      {!readOnly && (replyingTo || editing) && (
+        <div className="px-3 sm:px-4 pt-2 border-t border-slate-800 bg-slate-900/40 flex items-center gap-2">
+          <div className="min-w-0 flex-1 rounded-lg border-l-4 border-cyan-500 bg-slate-900 px-2 py-1 text-xs">
+            <span className="block font-semibold text-cyan-400">{editing ? 'Editing message' : `Replying to ${replyingTo!.senderId === me ? 'yourself' : friend.name}`}</span>
+            <span className="block truncate text-slate-300">{(editing ?? replyingTo)!.file ? `File: ${(editing ?? replyingTo)!.file!.name}` : (editing ?? replyingTo)!.message}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              if (editing) setInput('');
+              setEditing(null);
+              setReplyingTo(null);
+            }}
+            className="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-slate-300"
+            aria-label="Cancel"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+      {menuFor && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-end sm:items-center justify-center" onClick={() => setMenuFor(null)}>
+          <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-t-3xl sm:rounded-3xl p-3 pb-6" onClick={e => e.stopPropagation()}>
+            <div className="mx-2 mb-2 px-3 py-2 rounded-xl bg-slate-950 text-xs text-slate-300 truncate">{menuFor.deleted ? 'Deleted message' : menuFor.file ? `File: ${menuFor.file.name}` : menuFor.message}</div>
+            {!deleting ? (
+              <div className="flex flex-col">
+                {(() => {
+                  const m = menuFor;
+                  const textOk = !m.deleted && !m.file && !!m.message;
+                  const item = 'w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm text-slate-100 hover:bg-slate-800 text-left';
+                  return (
+                    <>
+                      {textOk && (
+                        <button className={item} onClick={() => { void copyText(m.message); setMenuFor(null); }}>
+                          <Copy className="w-4 h-4" /> Copy
+                        </button>
+                      )}
+                      {!m.deleted && !readOnly && (
+                        <button className={item} onClick={() => { setEditing(null); setReplyingTo(m); setMenuFor(null); taRef.current?.focus(); }}>
+                          <CornerUpLeft className="w-4 h-4" /> Reply
+                        </button>
+                      )}
+                      {textOk && (
+                        <button className={item} onClick={() => { setForwarding(m); setMenuFor(null); }}>
+                          <Forward className="w-4 h-4" /> Forward
+                        </button>
+                      )}
+                      {textOk && m.senderId === me && !m.broadcast && (
+                        <button className={item} onClick={() => { setReplyingTo(null); setEditing(m); setInput(m.message); setMenuFor(null); setTimeout(() => taRef.current?.focus(), 50); }}>
+                          <Pencil className="w-4 h-4" /> Edit
+                        </button>
+                      )}
+                      <button className={`${item} text-rose-400`} onClick={() => setDeleting(true)}>
+                        <Trash2 className="w-4 h-4" /> Delete
+                      </button>
+                    </>
+                  );
+                })()}
+              </div>
+            ) : (
+              <div className="flex flex-col">
+                <p className="px-4 py-2 text-xs text-slate-400">Delete this message?</p>
+                <button className="w-full px-4 py-3 rounded-xl text-sm text-rose-400 hover:bg-slate-800 text-left" onClick={() => { onDelete(menuFor.id, 'me'); setMenuFor(null); }}>
+                  Delete for you
+                  <span className="block text-[11px] text-slate-500">Removed only from your phone.</span>
+                </button>
+                {menuFor.senderId === me && !menuFor.broadcast && !menuFor.file && !menuFor.deleted && (
+                  <button className="w-full px-4 py-3 rounded-xl text-sm text-rose-400 hover:bg-slate-800 text-left" onClick={() => { onDelete(menuFor.id, 'all'); setMenuFor(null); }}>
+                    Delete for everyone
+                    <span className="block text-[11px] text-slate-500">{friend.name} will see “This message was deleted”.</span>
+                  </button>
+                )}
+                <button className="w-full px-4 py-3 rounded-xl text-sm text-slate-300 hover:bg-slate-800 text-left" onClick={() => setMenuFor(null)}>Cancel</button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      {forwarding && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-end sm:items-center justify-center" onClick={() => setForwarding(null)}>
+          <div className="w-full max-w-sm max-h-[80dvh] overflow-y-auto bg-slate-900 border border-slate-800 rounded-t-3xl sm:rounded-3xl p-4 pb-6" onClick={e => e.stopPropagation()}>
+            <h4 className="text-sm font-bold text-white">Forward to…</h4>
+            <p className="mt-1 mb-3 text-xs text-slate-400 truncate">{forwarding.message}</p>
+            {forwardTargets.length === 0 ? (
+              <p className="text-xs text-slate-500">You have no friends to forward to yet.</p>
+            ) : (
+              forwardTargets.map(f => (
+                <button
+                  key={f.userId}
+                  onClick={() => {
+                    onForward(f.userId, forwarding.message);
+                    setForwarding(null);
+                    setMenuNote(`Forwarded to ${f.name}`);
+                    setTimeout(() => setMenuNote(''), 2000);
+                  }}
+                  className="w-full flex items-center gap-3 px-2 py-2 rounded-xl hover:bg-slate-800 text-left"
+                >
+                  <Avatar avatar={f.avatar} photoUrl={f.photoUrl} />
+                  <span className="text-sm text-white truncate">{f.name}</span>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+      {menuNote && <div role="status" className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full bg-slate-800 border border-slate-700 text-xs text-white">{menuNote}</div>}
       {readOnly && (
         <div className="p-4 border-t border-slate-800 bg-slate-900/40 text-center text-xs text-slate-400">Only System Admin can send messages here.</div>
       )}

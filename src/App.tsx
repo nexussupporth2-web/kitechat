@@ -272,6 +272,20 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
       const ids = new Set(messageIds);
       setMessages(prev => prev.map(m => (ids.has(m.id) ? { ...m, status } : m)));
     });
+    s.on('message-edited', ({ messageId, message }: { messageId: string; message: string }) =>
+      setMessages(prev => prev.map(m => (m.id === messageId ? { ...m, message, edited: true } : m)))
+    );
+    s.on('message-deleted', ({ messageId, scope, userId: uid }: { messageId: string; scope: 'all' | 'me'; userId?: string }) =>
+      setMessages(prev =>
+        prev.map(m =>
+          m.id !== messageId
+            ? m
+            : scope === 'all'
+              ? { ...m, deleted: true, message: '', pinned: false, reactions: {} }
+              : { ...m, hiddenFor: [...(m.hiddenFor ?? []), uid ?? ''] }
+        )
+      )
+    );
     s.on('message-reaction-update', ({ messageId, reactions }: { messageId: string; reactions: Record<string, string> }) =>
       setMessages(prev => prev.map(m => (m.id === messageId ? { ...m, reactions } : m)))
     );
@@ -622,8 +636,12 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
               }}
               onDownload={downloadSharedFile}
               callHint={inCall ? 'You are already in a call' : !selected.isOnline ? `${selected.name} is offline. They will get a call notification.` : ''}
-              onSend={text => (selected.userId === BC ? void api('/api/broadcast', { message: text }).catch(() => {}) : socket?.emit('chat-message', { recipientId: selected.userId, message: text }))}
+              onSend={(text, replyTo) => (selected.userId === BC ? void api('/api/broadcast', { message: text }).catch(() => {}) : socket?.emit('chat-message', { recipientId: selected.userId, message: text, replyTo }))}
               onTyping={isTyping => selected.userId !== BC && socket?.emit('typing', { recipientId: selected.userId, isTyping })}
+              onEdit={(messageId, text) => socket?.emit('edit-message', { messageId, message: text })}
+              onDelete={(messageId, scope) => socket?.emit('delete-message', { messageId, scope })}
+              onForward={(friendId, text) => socket?.emit('chat-message', { recipientId: friendId, message: text, forwarded: true })}
+              forwardTargets={friends.filter(f => !f.isAdmin)}
               onReact={(messageId, reaction) => socket?.emit('message-reaction', { messageId, reaction })}
               onPin={pinMessage}
               onCall={type => calls.startCall(selected, type)}

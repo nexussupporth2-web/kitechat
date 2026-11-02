@@ -29,6 +29,11 @@ export interface ChatMessage {
   file?: { id: string; name: string; size: number; gone: boolean; permanent?: boolean };
   broadcast?: boolean;
   pinned?: boolean;
+  replyTo?: { id: string; senderId: string; text: string };
+  forwarded?: boolean;
+  edited?: boolean;
+  deleted?: boolean;
+  hiddenFor?: string[];
 }
 
 export interface FeedPost {
