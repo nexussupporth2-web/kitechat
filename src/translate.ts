@@ -4,7 +4,7 @@ export const LANGUAGES: [string, string][] = [
   ['en', 'English'], ['hi', 'Hindi (हिन्दी)'], ['bn', 'Bengali (বাংলা)'], ['mr', 'Marathi (मराठी)'], ['gu', 'Gujarati (ગુજરાતી)'],
   ['ta', 'Tamil (தமிழ்)'], ['te', 'Telugu (తెలుగు)'], ['kn', 'Kannada (ಕನ್ನಡ)'], ['ml', 'Malayalam (മലയാളം)'], ['pa', 'Punjabi (ਪੰਜਾਬੀ)'],
   ['ur', 'Urdu (اردو)'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['pt', 'Portuguese'], ['ru', 'Russian'],
-  ['ar', 'Arabic'], ['zh', 'Chinese'], ['ja', 'Japanese'], ['ko', 'Korean']
+  ['ar', 'Arabic'], ['zh', 'Chinese'], ['ja', 'Japanese'], ['ko', 'Korean'], ['th', 'Thai (ไทย)'], ['vi', 'Vietnamese (Tiếng Việt)']
 ];
 
 const key = (chatId: string) => `kite-translate-${chatId}`;
