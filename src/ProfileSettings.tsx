@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Camera, Check, Image as ImageIcon, Pencil, Smile, Trash2, X } from 'lucide-react';
+import { Camera, Check, Eye, Image as ImageIcon, KeyRound, Pencil, Smile, Trash2, UserRound, X } from 'lucide-react';
 import { api, uploadToStorage } from './api.ts';
 import { Facebook, Instagram, Linkedin, MessageCircle, Twitter, Youtube } from 'lucide-react';
 import BusinessInfo,{ BIZ_CATEGORIES, DAYS, SOCIALS, defaultHours, type Business } from './BusinessInfo.tsx';
@@ -23,6 +23,15 @@ interface Props {
   userId: string;
   /** Called after anything changed, so the rest of the app can refresh the name and picture. */
   onChanged: (u: { userId: string; name: string; avatar: string; photoUrl: string | null }) => void;
+  /** The admin's User ID cannot be changed. */
+  isAdmin?: boolean;
+  /** After the User ID changed: the new sign-in and the updated person. */
+  onIdChanged?: (u: { userId: string; name: string; avatar: string; photoUrl: string | null }, token: string) => void;
+  /** After the password changed: the new sign-in. */
+  onPasswordChanged?: (token: string) => void;
+  /** Do friends see my "last seen"? */
+  showLastSeen?: boolean;
+  onShowLastSeen?: (show: boolean) => void;
 }
 
 const CATEGORIES = ['Digital Creator', 'Software Engineer', 'Musician', 'Artist', 'Photographer', 'Student', 'Entrepreneur', 'Teacher', 'Other'];
@@ -33,12 +42,14 @@ const HANDLE_RE = /^(?![.])(?!.*\.\.)(?!.*[.]$)[a-z0-9._]{3,30}$/;
 const inputCls = 'w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-cyan-500';
 
 /** Profile Settings: picture, name, @username and a few optional details. The pencil switches to edit mode. */
-export default function ProfileSettings({ userId, onChanged }: Props) {
+export default function ProfileSettings({ userId, onChanged, isAdmin, onIdChanged, onPasswordChanged, showLastSeen = true, onShowLastSeen }: Props) {
   const [me, setMe] = useState<Me | null>(null);
   const [biz, setBiz] = useState<Business | null>(null);
   const [error, setError] = useState('');
   const [editing, setEditing] = useState(false);
   const [hasStatus, setHasStatus] = useState(false);
+  const [account, setAccount] = useState<'id' | 'password' | null>(null);
+  const [accountNote, setAccountNote] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -112,8 +123,181 @@ export default function ProfileSettings({ userId, onChanged }: Props) {
           {error && <p role="alert" className="mt-3 text-xs text-rose-400">{error}</p>}
         </div>
         <BusinessInfo b={{ ...biz, phone: biz.phone }} hideCover hideSocials />
+
+        {/* Account: User ID and password */}
+        <div className="px-4 mt-6">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Account</h3>
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/50 divide-y divide-slate-800">
+            <div className="flex items-center gap-3 px-4 py-3">
+              <UserRound className="w-5 h-5 text-slate-400 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="text-xs text-slate-400">User ID</div>
+                <div className="text-sm text-white font-mono tracking-wider break-all">{me.userId}</div>
+              </div>
+              {!isAdmin && (
+                <button onClick={() => setAccount('id')} className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-400 text-xs font-semibold">
+                  Change
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-3 px-4 py-3">
+              <KeyRound className="w-5 h-5 text-slate-400 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="text-xs text-slate-400">Password</div>
+                <div className="text-sm text-white tracking-widest">••••••</div>
+              </div>
+              <button onClick={() => setAccount('password')} className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-400 text-xs font-semibold">
+                Change
+              </button>
+            </div>
+            <label className="flex items-center gap-3 px-4 py-3 cursor-pointer">
+              <Eye className="w-5 h-5 text-slate-400 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm text-white">Show my last seen</div>
+                <div className="text-xs text-slate-400">Friends see when you were last online</div>
+              </div>
+              <input
+                type="checkbox"
+                checked={showLastSeen}
+                onChange={async e => {
+                  const v = e.target.checked;
+                  try {
+                    await api('/api/account/last-seen', { show: v });
+                    onShowLastSeen?.(v);
+                  } catch (err) {
+                    setAccountNote(err instanceof Error ? err.message : 'Could not save. Please try again.');
+                    setTimeout(() => setAccountNote(''), 4000);
+                  }
+                }}
+                className="w-5 h-5 accent-cyan-500"
+              />
+            </label>
+          </div>
+          {accountNote && <p role="status" className="mt-2 text-xs text-emerald-400">{accountNote}</p>}
+        </div>
+      </div>
+      {account === 'id' && (
+        <ChangeIdBox
+          currentId={me.userId}
+          onClose={() => setAccount(null)}
+          onDone={(u, token) => {
+            setAccount(null);
+            onIdChanged?.(u, token);
+          }}
+        />
+      )}
+      {account === 'password' && (
+        <ChangePasswordBox
+          onClose={() => setAccount(null)}
+          onDone={token => {
+            setAccount(null);
+            onPasswordChanged?.(token);
+            setAccountNote('Password changed. Other phones and computers signed in to your account have been signed out.');
+            setTimeout(() => setAccountNote(''), 6000);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** A small box over the screen, like "Add friend". */
+function SmallBox({ title, onClose, children }: { title: string; onClose?: () => void; children: React.ReactNode }) {
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center p-4" onClick={onClose}>
+      <div role="dialog" aria-label={title} className="w-full max-w-sm rounded-3xl bg-slate-900 border border-slate-800 p-6 relative" onClick={e => e.stopPropagation()}>
+        {onClose && (
+          <button onClick={onClose} className="absolute top-3 right-3 w-9 h-9 rounded-full hover:bg-slate-800 text-slate-400 flex items-center justify-center" aria-label="Close">
+            <X className="w-5 h-5" />
+          </button>
+        )}
+        {children}
       </div>
     </div>
+  );
+}
+
+function ChangeIdBox({ currentId, onClose, onDone }: { currentId: string; onClose: () => void; onDone: (u: { userId: string; name: string; avatar: string; photoUrl: string | null }, token: string) => void }) {
+  const [newId, setNewId] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    setError('');
+    setBusy(true);
+    try {
+      const r = await api<{ token: string; user: { userId: string; name: string; avatar: string; photoUrl: string | null } }>('/api/account/user-id', { newId, password });
+      onDone(r.user, r.token);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'That did not work. Please try again.');
+      setBusy(false);
+    }
+  };
+  return (
+    <SmallBox title="Change User ID" onClose={onClose}>
+      <h3 className="text-lg font-bold text-white mb-1">Change User ID</h3>
+      <p className="text-xs text-slate-400 mb-5">
+        Your friends, chats and posts move to the new ID. You'll sign in with the new ID from now on. You can change it once every 30 days, and nobody else can take <span className="font-mono">{currentId}</span> for 30 days.
+      </p>
+      {error && <div role="alert" className="mb-3 p-2.5 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-400 text-xs">{error}</div>}
+      <form onSubmit={submit} className="space-y-4">
+        <input
+          required
+          autoFocus
+          value={newId}
+          onChange={e => setNewId(e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, ''))}
+          maxLength={20}
+          placeholder="New User ID (3-20 letters, numbers or _)"
+          className={inputCls + ' font-mono tracking-wider'}
+        />
+        <input required type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Your password" autoComplete="current-password" className={inputCls} />
+        <button type="submit" disabled={busy || newId.length < 3 || !password} className="w-full h-11 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-accent-ink font-semibold rounded-xl text-sm">
+          {busy ? 'Changing…' : 'Change User ID'}
+        </button>
+      </form>
+    </SmallBox>
+  );
+}
+
+/** With `forced`: shown after signing in with a temporary password from the admin; it cannot be closed. */
+export function ChangePasswordBox({ onClose, onDone, forced }: { onClose?: () => void; onDone: (token: string) => void; forced?: boolean }) {
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [again, setAgain] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    if (next !== again) return setError('The two new passwords are not the same');
+    setError('');
+    setBusy(true);
+    try {
+      const r = await api<{ token: string }>('/api/account/password', { current, next });
+      onDone(r.token);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'That did not work. Please try again.');
+      setBusy(false);
+    }
+  };
+  return (
+    <SmallBox title="Change password" onClose={forced ? undefined : onClose}>
+      <h3 className="text-lg font-bold text-white mb-1">{forced ? 'Choose a new password' : 'Change password'}</h3>
+      <p className="text-xs text-slate-400 mb-5">
+        {forced ? 'You signed in with a temporary password from the admin. Please choose your own password now.' : 'Other phones and computers signed in to your account will be signed out.'}
+      </p>
+      {error && <div role="alert" className="mb-3 p-2.5 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-400 text-xs">{error}</div>}
+      <form onSubmit={submit} className="space-y-4">
+        <input required autoFocus type="password" value={current} onChange={e => setCurrent(e.target.value)} placeholder={forced ? 'Temporary password' : 'Current password'} autoComplete="current-password" className={inputCls} />
+        <input required type="password" minLength={6} maxLength={128} value={next} onChange={e => setNext(e.target.value)} placeholder="New password (at least 6 characters)" autoComplete="new-password" className={inputCls} />
+        <input required type="password" minLength={6} maxLength={128} value={again} onChange={e => setAgain(e.target.value)} placeholder="New password again" autoComplete="new-password" className={inputCls} />
+        <button type="submit" disabled={busy} className="w-full h-11 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-accent-ink font-semibold rounded-xl text-sm">
+          {busy ? 'Changing…' : 'Change password'}
+        </button>
+      </form>
+    </SmallBox>
   );
 }
 

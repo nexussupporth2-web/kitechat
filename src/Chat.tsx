@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, Bold, Code, Copy, CornerUpLeft, Download, FileText, Forward, Italic, Languages, Pencil, Trash2, MessageSquare, Paperclip, Phone, Pin, Strikethrough, Video, X } from 'lucide-react';
+import { ArrowLeft, Ban, ChevronDown, ChevronUp, Info, Mic, Search, Square, Bold, Code, Copy, CornerUpLeft, Download, FileText, Flag, Forward, Italic, Languages, MoreVertical, Pencil, Trash2, MessageSquare, Paperclip, Phone, Pin, Strikethrough, Video, X } from 'lucide-react';
 import Avatar from './Avatar.tsx';
 import KiteIcon from './KiteIcon.tsx';
 import { formatBytes } from './api.ts';
@@ -39,13 +39,114 @@ interface Props {
   wallpaperUrl: string;
   /** Only the admin can write in System Broadcast. */
   readOnly?: boolean;
+  /** Block or unblock this person. Returns an error text, or null when it worked. */
+  onBlock?: (blocked: boolean) => Promise<string | null>;
+  /** Report this person to the admin. Returns an error text, or null when it worked. */
+  onReport?: (reason: string) => Promise<string | null>;
+  /** Older messages of this chat, loaded when scrolling up. Resolves to how many came back. */
+  onLoadOlder?: (before: number) => Promise<number>;
+  /** Search this whole chat on the server (also messages not loaded yet). Newest first. */
+  onSearch?: (q: string) => Promise<{ id: string; timestamp: number }[]>;
+  /** Load every message between two times (to reach an old search result). */
+  onLoadRange?: (after: number, before: number) => Promise<void>;
+  /** Send a photo that shows as a picture in the chat. */
+  onSendPhoto?: (file: File, onProgress: ProgressFn) => Promise<void>;
+  /** Send a recorded voice note. */
+  onSendVoice?: (blob: Blob, durationSec: number, onProgress: ProgressFn) => Promise<void>;
+  /** A link to a chat photo or voice note. */
+  mediaUrl?: (messageId: string) => Promise<string>;
+  /** Group: name of a member (shown above their messages). */
+  nameOf?: (userId: string) => string;
+  /** Group: open the members screen. */
+  onGroupInfo?: () => void;
 }
 
-export default function Chat({ me, friend, messages, friendTyping, callDisabled, callHint, filesEnabled, onSendFile, onDownload, onSend, onEdit, onDelete, onForward, forwardTargets, onTyping, onReact, onPin, onCall, onBack, onOpenProfile, wallpaperUrl, readOnly }: Props) {
+/** "last seen today at 3:40 pm", "last seen yesterday at 9:05 am" or "last seen 12 Nov". */
+function lastSeenText(at: number) {
+  const d = new Date(at);
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const day = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((day(new Date()) - day(d)) / 86400000);
+  if (diff === 0) return `last seen today at ${time}`;
+  if (diff === 1) return `last seen yesterday at ${time}`;
+  return `last seen ${d.toLocaleDateString([], { day: 'numeric', month: 'short', ...(d.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) })}`;
+}
+
+export default function Chat({ me, friend, messages, friendTyping, callDisabled, callHint, filesEnabled, onSendFile, onDownload, onSend, onEdit, onDelete, onForward, forwardTargets, onTyping, onReact, onPin, onCall, onBack, onOpenProfile, wallpaperUrl, readOnly, onBlock, onReport, onLoadOlder, onSearch, onLoadRange, onSendPhoto, onSendVoice, mediaUrl, nameOf, onGroupInfo }: Props) {
+  const isGroup = !!friend.isGroup;
   const [input, setInput] = useState('');
   const [progress, setProgress] = useState<{ phase: Phase; p: number } | null>(null);
   const [fileError, setFileError] = useState('');
   const [downloading, setDownloading] = useState<string | null>(null);
+  const [fullPhoto, setFullPhoto] = useState<string | null>(null);
+
+  // ----- voice notes: tap the mic to record, tap again to send, X to cancel -----
+  const [recording, setRecording] = useState<{ start: number } | null>(null);
+  const [recSec, setRecSec] = useState(0);
+  const recorder = useRef<MediaRecorder | null>(null);
+  const recChunks = useRef<Blob[]>([]);
+  const recCancel = useRef(false);
+  const recTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const MAX_VOICE_SEC = 300;
+  const stopTracks = () => recorder.current?.stream.getTracks().forEach(t => t.stop());
+  const startRecording = async () => {
+    setFileError('');
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setFileError('Voice notes are not supported in this browser.');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const type = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm', 'audio/ogg;codecs=opus'].find(t => MediaRecorder.isTypeSupported(t));
+      const rec = new MediaRecorder(stream, type ? { mimeType: type, audioBitsPerSecond: 32000 } : undefined);
+      recChunks.current = [];
+      recCancel.current = false;
+      const start = Date.now();
+      rec.ondataavailable = ev => ev.data.size && recChunks.current.push(ev.data);
+      rec.onstop = async () => {
+        stopTracks();
+        if (recTimer.current) clearInterval(recTimer.current);
+        setRecording(null);
+        const dur = (Date.now() - start) / 1000;
+        if (recCancel.current || dur < 1 || !onSendVoice) return;
+        const blob = new Blob(recChunks.current, { type: rec.mimeType || type || 'audio/webm' });
+        setProgress({ phase: 'uploading', p: 0 });
+        try {
+          await onSendVoice(blob, dur, (phase, p) => setProgress({ phase, p }));
+        } catch (err) {
+          setFileError(err instanceof Error ? err.message : 'Could not send the voice note');
+        } finally {
+          setProgress(null);
+        }
+      };
+      recorder.current = rec;
+      rec.start(1000);
+      setRecording({ start });
+      setRecSec(0);
+      recTimer.current = setInterval(() => {
+        const s = Math.floor((Date.now() - start) / 1000);
+        setRecSec(s);
+        if (s >= MAX_VOICE_SEC) rec.state !== 'inactive' && rec.stop();
+      }, 250);
+    } catch {
+      setFileError('Please allow the microphone to record a voice note.');
+    }
+  };
+  const finishRecording = (cancel: boolean) => {
+    recCancel.current = cancel;
+    if (recorder.current && recorder.current.state !== 'inactive') recorder.current.stop();
+  };
+  // Leaving the chat while recording throws the recording away.
+  useEffect(
+    () => () => {
+      recCancel.current = true;
+      if (recorder.current && recorder.current.state !== 'inactive') recorder.current.stop();
+      stopTracks();
+      if (recTimer.current) clearInterval(recTimer.current);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
   const fileInput = useRef<HTMLInputElement>(null);
   const [wallOpacity, setWallOpacity] = useState(loadWallOpacity);
   // How this friend chose to show their messages (only if they share it and I choose to see it).
@@ -67,9 +168,16 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
     e.target.value = '';
     if (!file) return;
     setFileError('');
+    // Photos show as a picture in the chat; other files are sent as before (kept until downloaded).
+    const isPhoto = /^image\/(jpeg|png|webp|heic|heif|gif|avif)$/i.test(file.type);
+    if (isGroup && !isPhoto) {
+      setFileError('In groups you can send photos and voice notes.');
+      return;
+    }
     setProgress({ phase: 'compressing', p: 0 });
     try {
-      await onSendFile(file, (phase, p) => setProgress({ phase, p }));
+      if (isPhoto && onSendPhoto) await onSendPhoto(file, (phase, p) => setProgress({ phase, p }));
+      else await onSendFile(file, (phase, p) => setProgress({ phase, p }));
     } catch (err) {
       setFileError(err instanceof Error ? err.message : 'Could not send the file');
     } finally {
@@ -142,6 +250,41 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
   const [lang, setLang] = useState(() => getChatLang(friend.userId));
   const [langOpen, setLangOpen] = useState(false);
   const [callOpen, setCallOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  // ----- search in this chat -----
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQ, setSearchQ] = useState('');
+  const [hits, setHits] = useState<{ id: string; timestamp: number }[]>([]);
+  const [hitIdx, setHitIdx] = useState(0);
+  const [searching, setSearching] = useState(false);
+  const searchSeq = useRef(0);
+  const blockedByMe = !!friend.blockedByMe;
+  const toggleBlock = async () => {
+    setMoreOpen(false);
+    if (!onBlock) return;
+    const next = !blockedByMe;
+    if (next && !window.confirm(`Block ${friend.name}?\n\nThey will not be able to message you, call you or send you files. They will not be told.`)) return;
+    const e = await onBlock(next);
+    setMenuNote(e ?? (next ? `${friend.name} is blocked` : `${friend.name} is unblocked`));
+    setTimeout(() => setMenuNote(''), 2500);
+  };
+  const report = async () => {
+    setMoreOpen(false);
+    if (!onReport) return;
+    const reason = window.prompt(`Report ${friend.name} to the admin.\n\nWhat happened? (optional)`, '');
+    if (reason === null) return;
+    const e = await onReport(reason);
+    if (e) {
+      setMenuNote(e);
+      setTimeout(() => setMenuNote(''), 3000);
+      return;
+    }
+    if (!blockedByMe && onBlock && window.confirm(`Reported. The admin will look at it.\n\nAlso block ${friend.name}?`)) {
+      const b = await onBlock(true);
+      setMenuNote(b ?? `${friend.name} is reported and blocked`);
+    } else setMenuNote('Reported. The admin will look at it.');
+    setTimeout(() => setMenuNote(''), 3000);
+  };
   const [translated, setTranslated] = useState<Record<string, string>>({});
   const [showOriginal, setShowOriginal] = useState<Record<string, boolean>>({});
   const [transNote, setTransNote] = useState('');
@@ -158,8 +301,15 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const convo = useMemo(
-    () => messages.filter(m => (m.senderId === friend.userId || m.recipientId === friend.userId) && !m.hiddenFor?.includes(me)),
-    [messages, friend.userId, me]
+    () =>
+      messages.filter(
+        m =>
+          !m.hiddenFor?.includes(me) &&
+          (isGroup
+            ? m.recipientId === friend.userId
+            : (m.senderId === friend.userId && m.recipientId === me) || (m.senderId === me && m.recipientId === friend.userId))
+      ),
+    [messages, friend.userId, me, isGroup]
   );
 
   useEffect(() => {
@@ -168,7 +318,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
     (async () => {
       for (const m of convo) {
         if (stop) return;
-        if (m.senderId === me || m.file || !m.message || translated[m.id] !== undefined) continue;
+        if (m.senderId === me || m.file || m.media || m.deleted || !m.message || translated[m.id] !== undefined) continue;
         try {
           const t = await translateText(m.id, m.message, lang);
           if (stop) return;
@@ -189,9 +339,88 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
 
   const pinned = useMemo(() => convo.filter(m => m.pinned).slice(-3), [convo]);
 
+  const textOf = (m: ChatMessage) => (m.deleted ? '' : `${m.message} ${m.file?.name ?? ''}`.toLowerCase());
+  const goToHit = async (list: { id: string; timestamp: number }[], i: number) => {
+    const hit = list[i];
+    if (!hit) return;
+    setHitIdx(i);
+    if (!convo.some(m => m.id === hit.id) && onLoadRange && convo.length) {
+      setSearching(true);
+      await onLoadRange(hit.timestamp - 1, convo[0].timestamp).catch(() => {});
+      setSearching(false);
+    }
+    setTimeout(() => document.getElementById(`msg-${hit.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 80);
+  };
+  // Find matches a moment after the person stops typing: in what is loaded, plus older ones on the server.
+  useEffect(() => {
+    if (!searchOpen) return;
+    const q = searchQ.trim().toLowerCase();
+    if (q.length < 2) {
+      setHits([]);
+      return;
+    }
+    const seq = ++searchSeq.current;
+    const t = setTimeout(async () => {
+      const local = convo.filter(m => textOf(m).includes(q)).map(m => ({ id: m.id, timestamp: m.timestamp }));
+      let remote: { id: string; timestamp: number }[] = [];
+      if (onSearch) {
+        setSearching(true);
+        remote = await onSearch(q).catch(() => []);
+        setSearching(false);
+      }
+      if (seq !== searchSeq.current) return;
+      const byId = new Map<string, { id: string; timestamp: number }>();
+      for (const h of [...local, ...remote]) byId.set(h.id, h);
+      const list = [...byId.values()].sort((a, b) => b.timestamp - a.timestamp);
+      setHits(list);
+      if (list.length) void goToHit(list, 0);
+    }, 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQ, searchOpen]);
+  const closeSearch = () => {
+    setSearchOpen(false);
+    setSearchQ('');
+    setHits([]);
+  };
+  const hitId = searchOpen ? hits[hitIdx]?.id : undefined;
+
+  // Jump to the newest message when a new one arrives (not when older ones are added at the top).
+  const lastId = convo.length ? convo[convo.length - 1].id : '';
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [convo.length, friendTyping]);
+  }, [lastId, friendTyping]);
+
+  // ----- older messages: loaded by themselves when the person scrolls to the top -----
+  const listRef = useRef<HTMLDivElement>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const noMoreOlder = useRef(false);
+  const keepPlace = useRef<number | null>(null);
+  const firstId = convo.length ? convo[0].id : '';
+  const loadOlder = async () => {
+    if (!onLoadOlder || loadingOlder || noMoreOlder.current || !convo.length) return;
+    const el = listRef.current;
+    setLoadingOlder(true);
+    try {
+      keepPlace.current = el ? el.scrollHeight - el.scrollTop : null;
+      const n = await onLoadOlder(convo[0].timestamp);
+      if (n < 100) noMoreOlder.current = true;
+      if (n === 0) keepPlace.current = null;
+    } catch {
+      noMoreOlder.current = true;
+      keepPlace.current = null;
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
+  // After older messages appear above, keep the screen on the message the person was reading.
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (el && keepPlace.current !== null) {
+      el.scrollTop = el.scrollHeight - keepPlace.current;
+      keepPlace.current = null;
+    }
+  }, [firstId]);
 
   const stopTyping = () => {
     if (typingTimer.current) clearTimeout(typingTimer.current);
@@ -264,20 +493,22 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
           <button onClick={onBack} className="md:hidden w-9 h-9 rounded-full hover:bg-slate-800 flex items-center justify-center text-slate-300" aria-label="Back">
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <button onClick={onOpenProfile} className="flex items-center gap-3 min-w-0 text-left" aria-label={`Open ${friend.name}'s profile`}>
+          <button onClick={isGroup ? onGroupInfo : onOpenProfile} className="flex items-center gap-3 min-w-0 text-left" aria-label={isGroup ? `Open ${friend.name} group info` : `Open ${friend.name}'s profile`}>
           <Avatar avatar={friend.avatar} photoUrl={friend.photoUrl} />
           <div className="min-w-0">
             <h3 className="text-sm font-bold text-white truncate">{friend.name}</h3>
             <div className="text-[11px] text-slate-400 flex items-center gap-1.5 h-4">
-              <span className={`w-2 h-2 rounded-full ${friend.isOnline ? 'bg-emerald-500' : 'bg-slate-600'}`} />
-              {friendTyping ? (
+              {!isGroup && <span className={`w-2 h-2 rounded-full ${friend.isOnline ? 'bg-emerald-500' : 'bg-slate-600'}`} />}
+              {isGroup ? (
+                <span className="truncate">{friend.members?.length ?? 0} people · tap for group info</span>
+              ) : friendTyping ? (
                 <span className="flex items-center gap-1" aria-label="typing">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-bounce" />
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-bounce [animation-delay:0.2s]" />
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-bounce [animation-delay:0.4s]" />
                 </span>
               ) : (
-                <span>{friend.isOnline ? 'Online' : 'Offline'}</span>
+                <span className="truncate">{friend.isOnline ? 'Online' : friend.lastSeen ? lastSeenText(friend.lastSeen) : 'Offline'}</span>
               )}
             </div>
           </div>
@@ -288,6 +519,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
             onClick={() => {
               setLangOpen(o => !o);
               setCallOpen(false);
+              setMoreOpen(false);
             }}
             className={`${iconBtn} ${lang ? 'ring-2 ring-cyan-400' : ''}`}
             title={lang ? 'Translating incoming messages' : 'Translate incoming messages'}
@@ -304,16 +536,17 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
               ))}
             </div>
           )}
-          {!friend.isAdmin && (
+          {!friend.isAdmin && !isGroup && (
             <>
               <button
                 onClick={() => {
                   setCallOpen(o => !o);
                   setLangOpen(false);
+                  setMoreOpen(false);
                 }}
-                disabled={callDisabled}
+                disabled={callDisabled || blockedByMe}
                 className={iconBtn}
-                title={callHint || 'Call'}
+                title={blockedByMe ? `Unblock ${friend.name} to call` : callHint || 'Call'}
                 aria-label="Call"
                 aria-expanded={callOpen}
               >
@@ -343,8 +576,88 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
               )}
             </>
           )}
+          {(
+            <>
+              <button
+                onClick={() => {
+                  setMoreOpen(o => !o);
+                  setLangOpen(false);
+                  setCallOpen(false);
+                }}
+                className="w-10 h-10 rounded-full hover:bg-slate-800 text-slate-300 flex items-center justify-center"
+                aria-label="More options"
+                aria-expanded={moreOpen}
+              >
+                <MoreVertical className="w-5 h-5" />
+              </button>
+              {moreOpen && (
+                <div className="absolute right-0 top-12 z-40 w-52 rounded-2xl border border-slate-700 bg-slate-900 shadow-xl p-2">
+                  <button
+                    onClick={() => {
+                      setMoreOpen(false);
+                      setSearchOpen(true);
+                    }}
+                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-white hover:bg-slate-800"
+                  >
+                    <Search className="w-4 h-4" /> Search messages
+                  </button>
+                  {onGroupInfo && (
+                    <button
+                      onClick={() => {
+                        setMoreOpen(false);
+                        onGroupInfo();
+                      }}
+                      className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-white hover:bg-slate-800"
+                    >
+                      <Info className="w-4 h-4" /> Group info
+                    </button>
+                  )}
+                  {onBlock && (
+                    <button onClick={() => void toggleBlock()} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-rose-400 hover:bg-slate-800">
+                      <Ban className="w-4 h-4" /> {blockedByMe ? `Unblock ${friend.name}` : `Block ${friend.name}`}
+                    </button>
+                  )}
+                  {onReport && (
+                    <button onClick={() => void report()} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-rose-400 hover:bg-slate-800">
+                      <Flag className="w-4 h-4" /> Report {friend.name}
+                    </button>
+                  )}
+                </div>
+              )}
+            </>
+          )}
         </div>
       </div>
+
+      {searchOpen && (
+        <div className="flex items-center gap-2 px-3 sm:px-6 py-2 border-b border-slate-800 bg-slate-900/80">
+          <Search className="w-4 h-4 text-slate-400 shrink-0" />
+          <input
+            autoFocus
+            value={searchQ}
+            onChange={e => setSearchQ(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && hits.length) void goToHit(hits, (hitIdx + 1) % hits.length);
+              if (e.key === 'Escape') closeSearch();
+            }}
+            placeholder="Search this chat"
+            className="flex-1 min-w-0 bg-transparent text-sm text-white placeholder:text-slate-500 focus:outline-none"
+            aria-label="Search this chat"
+          />
+          <span className="text-[11px] text-slate-400 shrink-0">
+            {searching ? '…' : searchQ.trim().length >= 2 ? (hits.length ? `${hitIdx + 1} of ${hits.length}` : 'No results') : ''}
+          </span>
+          <button disabled={!hits.length} onClick={() => void goToHit(hits, (hitIdx + 1) % hits.length)} className="w-8 h-8 rounded-full hover:bg-slate-800 text-slate-300 disabled:opacity-40 flex items-center justify-center" aria-label="Older result">
+            <ChevronUp className="w-4 h-4" />
+          </button>
+          <button disabled={!hits.length} onClick={() => void goToHit(hits, (hitIdx - 1 + hits.length) % hits.length)} className="w-8 h-8 rounded-full hover:bg-slate-800 text-slate-300 disabled:opacity-40 flex items-center justify-center" aria-label="Newer result">
+            <ChevronDown className="w-4 h-4" />
+          </button>
+          <button onClick={closeSearch} className="w-8 h-8 rounded-full hover:bg-slate-800 text-slate-300 flex items-center justify-center" aria-label="Close search">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {transNote && <p role="status" className="shrink-0 px-4 py-1.5 text-[11px] text-amber-300 bg-slate-900/80 border-b border-slate-800">{transNote}</p>}
       {(pinned.length > 0 || pinNote) && (
@@ -367,8 +680,13 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
         className="flex-1 overflow-y-auto p-3 sm:p-6 space-y-3 chat-wallpaper"
         style={{ backgroundImage: wallpaperBackground(wallpaperUrl, wallOpacity) }}
         onClick={() => setPickerFor(null)}
-        onScroll={() => setPickerFor(null)}
+        ref={listRef}
+        onScroll={e => {
+          setPickerFor(null);
+          if (e.currentTarget.scrollTop < 80) void loadOlder();
+        }}
       >
+        {loadingOlder && <p role="status" className="text-center text-[11px] text-slate-400">Loading older messages…</p>}
         {convo.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-slate-500 text-center">
             <MessageSquare className="w-12 h-12 mb-3 opacity-30" />
@@ -382,7 +700,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
             const myReaction = msg.reactions?.[me];
             return (
               <div key={msg.id} id={`msg-${msg.id}`} className={`flex flex-col ${mine ? 'items-end' : 'items-start'}`}>
-                <div className="relative max-w-[92%] sm:max-w-xl">
+                <div className={`relative max-w-[92%] sm:max-w-xl ${hitId === msg.id ? 'ring-2 ring-amber-400 rounded-2xl' : ''}`}>
                   <div
                     onPointerDown={e => startPress(e, msg)}
                     onPointerMove={movePress}
@@ -407,6 +725,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
                     className={`msg-text py-1 cursor-pointer select-none [-webkit-touch-callout:none] break-words text-left ${mine ? 'msg-mine' : 'msg-theirs'}`}
                   >
                     {msg.broadcast && <div className="text-[10px] font-semibold uppercase tracking-wider opacity-70 mb-1">📢 System Broadcast</div>}
+                    {isGroup && !mine && <div className="text-[11px] font-semibold text-cyan-400 mb-0.5">{nameOf?.(msg.senderId) ?? msg.senderId}</div>}
                     {msg.forwarded && !msg.deleted && <div className="text-[11px] italic opacity-60 mb-0.5">↪ Forwarded</div>}
                     {msg.replyTo && !msg.deleted && (
                       <button
@@ -417,13 +736,15 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
                         }}
                         className="block w-full text-left mb-1 rounded-lg border-l-4 border-slate-500 bg-slate-900/60 px-2 py-1 text-[13px] leading-snug"
                       >
-                        <span className="block text-[11px] font-semibold opacity-70">{msg.replyTo.senderId === me ? 'You' : friend.name}</span>
+                        <span className="block text-[11px] font-semibold opacity-70">{msg.replyTo.senderId === me ? 'You' : isGroup ? nameOf?.(msg.replyTo.senderId) ?? '' : friend.name}</span>
                         <span className="block truncate opacity-80">{msg.replyTo.text}</span>
                       </button>
                     )}
                     {msg.deleted && <div className="italic opacity-60 text-base">🚫 This message was deleted</div>}
                     {msg.file?.permanent && msg.message && <div className="mb-2 break-words">{formatMessage(msg.message)}</div>}
-                    {msg.deleted ? null : msg.file ? (
+                    {msg.deleted ? null : msg.media ? (
+                      <ChatMedia msg={msg} mediaUrl={mediaUrl} onOpenPhoto={setFullPhoto} />
+                    ) : msg.file ? (
                       <div className="flex items-center gap-3 min-w-[12rem] text-sm rounded-xl border border-slate-700 bg-slate-900/70 px-3 py-2 text-slate-200">
                         <FileText className="w-8 h-8 shrink-0 opacity-80" />
                         <div className="min-w-0 flex-1">
@@ -451,7 +772,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
                     ) : (
                       formatMessage(!mine && lang && translated[msg.id] && !showOriginal[msg.id] ? translated[msg.id] : msg.message)
                     )}
-                    {!mine && lang && !msg.file && !msg.deleted && msg.message && (
+                    {!mine && lang && !msg.file && !msg.media && !msg.deleted && msg.message && (
                       translated[msg.id] ? (
                         <button
                           onClick={e => {
@@ -542,10 +863,10 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
         </div>
       )}
 
-      {!readOnly && (replyingTo || editing) && (
+      {!readOnly && !blockedByMe && (replyingTo || editing) && (
         <div className="px-3 sm:px-4 pt-2 border-t border-slate-800 bg-slate-900/40 flex items-center gap-2">
           <div className="min-w-0 flex-1 rounded-lg border-l-4 border-cyan-500 bg-slate-900 px-2 py-1 text-xs">
-            <span className="block font-semibold text-cyan-400">{editing ? 'Editing message' : `Replying to ${replyingTo!.senderId === me ? 'yourself' : friend.name}`}</span>
+            <span className="block font-semibold text-cyan-400">{editing ? 'Editing message' : `Replying to ${replyingTo!.senderId === me ? 'yourself' : isGroup ? nameOf?.(replyingTo!.senderId) ?? '' : friend.name}`}</span>
             <span className="block truncate text-slate-300">{(editing ?? replyingTo)!.file ? `File: ${(editing ?? replyingTo)!.file!.name}` : (editing ?? replyingTo)!.message}</span>
           </div>
           <button
@@ -570,7 +891,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
               <div className="flex flex-col">
                 {(() => {
                   const m = menuFor;
-                  const textOk = !m.deleted && !m.file && !!m.message;
+                  const textOk = !m.deleted && !m.file && !m.media && !!m.message;
                   const item = 'w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm text-slate-100 hover:bg-slate-800 text-left';
                   return (
                     <>
@@ -611,7 +932,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
                 {menuFor.senderId === me && !menuFor.broadcast && !menuFor.file && !menuFor.deleted && (
                   <button className="w-full px-4 py-3 rounded-xl text-sm text-rose-400 hover:bg-slate-800 text-left" onClick={() => { onDelete(menuFor.id, 'all'); setMenuFor(null); }}>
                     Delete for everyone
-                    <span className="block text-[11px] text-slate-500">{friend.name} will see “This message was deleted”.</span>
+                    <span className="block text-[11px] text-slate-500">{isGroup ? 'Everyone in the group' : friend.name} will see “This message was deleted”.</span>
                   </button>
                 )}
                 <button className="w-full px-4 py-3 rounded-xl text-sm text-slate-300 hover:bg-slate-800 text-left" onClick={() => setMenuFor(null)}>Cancel</button>
@@ -661,7 +982,13 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
           <button type="button" onPointerDown={e => e.preventDefault()} onClick={() => format('`')} className={fmtBtn} aria-label="Inline code" title="Inline code"><Code className="w-4 h-4" /></button>
         </div>
       )}
-      {!readOnly && <form onSubmit={submit} className="p-3 sm:p-4 border-t border-slate-800 bg-slate-900/40 flex gap-3 items-end">
+      {!readOnly && blockedByMe && (
+        <div className="p-4 border-t border-slate-800 bg-slate-900/40 text-center text-xs text-slate-400">
+          You blocked {friend.name}.{' '}
+          <button onClick={() => void toggleBlock()} className="text-cyan-400 font-semibold underline underline-offset-2">Unblock</button>
+        </div>
+      )}
+      {!readOnly && !blockedByMe && <form onSubmit={submit} className="p-3 sm:p-4 border-t border-slate-800 bg-slate-900/40 flex gap-3 items-end">
         {filesEnabled && (
           <>
             <input ref={fileInput} type="file" className="hidden" onChange={pickFile} />
@@ -670,13 +997,22 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
               onClick={() => fileInput.current?.click()}
               disabled={progress !== null}
               className="w-11 h-11 shrink-0 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 flex items-center justify-center border border-slate-700"
-              title="Send a file (kept only until it is downloaded)"
+              title="Send a photo (kept 30 days) or a file (kept until downloaded)"
               aria-label="Attach a file"
             >
               <Paperclip className="w-4 h-4" />
             </button>
           </>
         )}
+        {recording ? (
+          <div className="flex-1 min-w-0 h-11 flex items-center gap-3 rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 text-sm text-rose-200">
+            <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse" />
+            <span>Recording {Math.floor(recSec / 60)}:{String(recSec % 60).padStart(2, '0')}</span>
+            <button type="button" onClick={() => finishRecording(true)} className="ml-auto w-8 h-8 rounded-full hover:bg-slate-800 text-slate-300 flex items-center justify-center" aria-label="Cancel voice note">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        ) : (
         <textarea
           ref={taRef}
           rows={1}
@@ -695,10 +1031,77 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
           placeholder={`Message ${friend.name}…`}
           className="flex-1 min-w-0 bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-base text-white focus:outline-none focus:border-cyan-500 resize-none leading-snug"
         />
-        <button type="submit" className="w-11 h-11 bg-cyan-500 hover:bg-cyan-400 text-accent-ink rounded-xl flex items-center justify-center shrink-0" aria-label="Send">
-          <KiteIcon className="w-6 h-6" />
-        </button>
+        )}
+        {recording ? (
+          <button type="button" onClick={() => finishRecording(false)} className="w-11 h-11 bg-rose-500 hover:bg-rose-400 text-white rounded-xl flex items-center justify-center shrink-0" aria-label="Stop and send voice note">
+            <Square className="w-4 h-4 fill-current" />
+          </button>
+        ) : !input.trim() && !editing && onSendVoice && filesEnabled ? (
+          <button type="button" onClick={() => void startRecording()} disabled={progress !== null} className="w-11 h-11 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-accent-ink rounded-xl flex items-center justify-center shrink-0" aria-label="Record a voice note" title="Record a voice note">
+            <Mic className="w-5 h-5" />
+          </button>
+        ) : (
+          <button type="submit" className="w-11 h-11 bg-cyan-500 hover:bg-cyan-400 text-accent-ink rounded-xl flex items-center justify-center shrink-0" aria-label="Send">
+            <KiteIcon className="w-6 h-6" />
+          </button>
+        )}
       </form>}
+      {fullPhoto && (
+        <div className="fixed inset-0 z-[70] bg-black/95 flex items-center justify-center" onClick={() => setFullPhoto(null)}>
+          <img src={fullPhoto} alt="" className="max-w-full max-h-full object-contain" />
+          <button onClick={() => setFullPhoto(null)} className="absolute top-4 right-4 w-11 h-11 rounded-full bg-black/60 text-fixed-white flex items-center justify-center" aria-label="Close photo">
+            <X className="w-6 h-6" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A photo or voice note inside a chat bubble. The link is fetched when it is shown. */
+function ChatMedia({ msg, mediaUrl, onOpenPhoto }: { msg: ChatMessage; mediaUrl?: (id: string) => Promise<string>; onOpenPhoto: (url: string) => void }) {
+  const media = msg.media!;
+  const [url, setUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    if (media.gone || !mediaUrl) return;
+    let live = true;
+    mediaUrl(msg.id)
+      .then(u => live && setUrl(u))
+      .catch(() => live && setFailed(true));
+    return () => {
+      live = false;
+    };
+  }, [msg.id, media.gone, mediaUrl]);
+  if (media.gone || failed) {
+    return <div className="italic opacity-60 text-sm">{media.kind === 'photo' ? '📷 Photo expired' : '🎤 Voice note expired'}</div>;
+  }
+  if (media.kind === 'photo') {
+    return url ? (
+      <img
+        src={url}
+        alt="Photo"
+        loading="lazy"
+        onClick={e => {
+          e.stopPropagation();
+          onOpenPhoto(url);
+        }}
+        className="block max-w-[16rem] max-h-80 rounded-xl object-cover cursor-zoom-in"
+      />
+    ) : (
+      <div className="w-48 h-36 rounded-xl bg-slate-800/70 animate-pulse" aria-label="Loading photo" />
+    );
+  }
+  const dur = media.dur ? `${Math.floor(media.dur / 60)}:${String(media.dur % 60).padStart(2, '0')}` : '';
+  return (
+    <div className="flex items-center gap-2 min-w-[14rem]">
+      <span aria-hidden>🎤</span>
+      {url ? (
+        <audio src={url} controls preload="metadata" onClick={e => e.stopPropagation()} onPointerDown={e => e.stopPropagation()} className="h-9 max-w-[15rem]" />
+      ) : (
+        <span className="text-xs opacity-70">Loading…</span>
+      )}
+      {dur && <span className="text-[11px] opacity-70 shrink-0">{dur}</span>}
     </div>
   );
 }

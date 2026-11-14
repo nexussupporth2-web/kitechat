@@ -9,13 +9,14 @@ import CallScreen from './CallScreen.tsx';
 import Feed from './Feed.tsx';
 import Network, { Moderation } from './Network.tsx';
 import Profile from './Profile.tsx';
-import ProfileSettings from './ProfileSettings.tsx';
+import ProfileSettings, { ChangePasswordBox } from './ProfileSettings.tsx';
 import ThemeSheet from './ThemeSheet.tsx';
-import { downloadSharedFile, sendFileToFriend, uploadBroadcastFile, type MediaConfig } from './media.ts';
+import { chatMediaUrl, downloadSharedFile, sendChatPhoto, sendFileToFriend, sendVoiceNote, uploadBroadcastFile, type MediaConfig } from './media.ts';
 import { enableNotifications, notificationState, notify, playMessageSound, registerSW, startRinging, stopRinging, subscribePush, unlockAudioOnFirstTap } from './notify.ts';
 import { useCall } from './useCall.ts';
 import { DEFAULT_WALLPAPER, loadChatWallpaper } from './wallpaper.ts';
-import type { ChatMessage, Friend, User } from './types.ts';
+import { isGroupId, type ChatMessage, type Friend, type User } from './types.ts';
+import { GroupInfoBox, NewGroupBox } from './Groups.tsx';
 
 /** Shows a friendly screen instead of a blank page if something crashes, and recovers by itself. */
 class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
@@ -110,6 +111,9 @@ function Root() {
 function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () => void; onUserChange: (u: User) => void }) {
   const [socket, setSocket] = useState<KiteSocket | null>(null);
   const [friends, setFriends] = useState<Friend[]>([]);
+  const [groups, setGroups] = useState<Friend[]>([]);
+  const [newGroupOpen, setNewGroupOpen] = useState(false);
+  const [groupInfoOpen, setGroupInfoOpen] = useState(false);
   const [requests, setRequests] = useState<{ userId: string; name: string; avatar: string; photoUrl: string | null }[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -149,7 +153,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
   const selected: Friend | null =
     selectedId === BC
       ? { userId: BC, name: 'System Broadcast', avatar: '📢', photoUrl: null, isAdmin: true, isOnline: true }
-      : friends.find(f => f.userId === selectedId) ?? null;
+      : friends.find(f => f.userId === selectedId) ?? groups.find(g => g.userId === selectedId) ?? null;
   const chatMessages = (() => {
     if (!user.isAdmin) return messages;
     if (selectedId !== BC) return messages.filter(m => !(m.broadcast && m.senderId === user.userId));
@@ -172,7 +176,19 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
         api<{ messages: ChatMessage[] }>('/api/messages')
       ]);
       setFriends(f.friends);
-      setMessages(m.messages);
+      // Group chats (an older server without groups just has none).
+      api<{ groups: Friend[] }>('/api/groups')
+        .then(r => setGroups(r.groups))
+        .catch(() => {});
+      // Keep older messages already loaded by scrolling up (the server sends only the newest of each chat).
+      setMessages(prev => {
+        const other = (x: ChatMessage) => (isGroupId(x.recipientId) ? x.recipientId : x.senderId === user.userId ? x.recipientId : x.senderId);
+        const oldest = new Map<string, number>();
+        for (const x of m.messages) oldest.set(other(x), Math.min(oldest.get(other(x)) ?? Infinity, x.timestamp));
+        const ids = new Set(m.messages.map(x => x.id));
+        const keep = prev.filter(x => !ids.has(x.id) && !x.hiddenFor?.includes(user.userId) && x.timestamp < (oldest.get(other(x)) ?? -Infinity));
+        return keep.length ? [...keep, ...m.messages].sort((a, b) => a.timestamp - b.timestamp) : m.messages;
+      });
     } catch (e) {
       if (e instanceof ApiError && (e.status === 401 || e.blocked)) onLogout();
     }
@@ -183,7 +199,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
     } catch {
       /* an older server without friend requests */
     }
-  }, [onLogout]);
+  }, [onLogout, user.userId]);
 
   const answerRequest = async (userId: string, accept: boolean) => {
     try {
@@ -241,14 +257,35 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
     window.addEventListener('online', wake);
     window.addEventListener('focus', wake);
 
-    s.on('presence-update', ({ userId, isOnline }: { userId: string; isOnline: boolean }) =>
-      setFriends(prev => prev.map(f => (f.userId === userId ? { ...f, isOnline } : f)))
+    s.on('presence-update', ({ userId, isOnline, lastSeen }: { userId: string; isOnline: boolean; lastSeen?: number | null }) =>
+      setFriends(prev => prev.map(f => (f.userId === userId ? { ...f, isOnline, ...(lastSeen !== undefined ? { lastSeen } : {}) } : f)))
     );
     s.on('friend-added', (f: Friend) => {
       setFriends(prev => [...prev.filter(x => x.userId !== f.userId), f]);
       loadData(); // also brings in their picture
     });
     s.on('profile-updated', () => loadData());
+    s.on('group-updated', () => loadData());
+    // A friend changed their User ID: swap it everywhere on this screen.
+    s.on('friend-id-changed', ({ oldId, newId }: { oldId: string; newId: string }) => {
+      const sw = (x: string) => (x === oldId ? newId : x);
+      setFriends(prev => prev.map(f => (f.userId === oldId ? { ...f, userId: newId } : f)));
+      setMessages(prev =>
+        prev.map(m =>
+          m.senderId === oldId || m.recipientId === oldId || (m.reactions && oldId in m.reactions)
+            ? {
+                ...m,
+                senderId: sw(m.senderId),
+                recipientId: sw(m.recipientId),
+                reactions: Object.fromEntries(Object.entries(m.reactions ?? {}).map(([k, v]) => [sw(k), v])),
+                ...(m.replyTo ? { replyTo: { ...m.replyTo, senderId: sw(m.replyTo.senderId) } } : {})
+              }
+            : m
+        )
+      );
+      setSelectedId(cur => (cur === oldId ? newId : cur));
+      loadData();
+    });
     s.on('friend-request', () => loadData());
     s.on('friend-removed', ({ userId: gone }: { userId: string }) => {
       setFriends(prev => prev.filter(f => f.userId !== gone));
@@ -259,10 +296,14 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
     s.on('chat-message', (msg: ChatMessage) => {
       setMessages(prev => (prev.some(m => m.id === msg.id) ? prev : [...prev, msg]));
       if (msg.senderId !== user.userId) {
-        const watching = !document.hidden && selectedRef.current === msg.senderId;
-        if (watching) s.emit('mark-messages-read', { friendId: msg.senderId });
-        else if (document.hidden) {
-          void notify('KiteChat', 'You have a message', `msg-${msg.senderId}`);
+        // In a group the chat is the group, otherwise it is the person who wrote.
+        const chatId = isGroupId(msg.recipientId) ? msg.recipientId : msg.senderId;
+        const watching = !document.hidden && selectedRef.current === chatId;
+        if (watching) {
+          s.emit('mark-messages-read', { friendId: chatId });
+          if (isGroupId(chatId)) setGroups(prev => prev.map(g => (g.userId === chatId ? { ...g, lastRead: Date.now() } : g)));
+        } else if (document.hidden) {
+          void notify('KiteChat', 'You have a message', `msg-${chatId}`);
         } else playMessageSound();
       }
     });
@@ -309,18 +350,30 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
   const selectFriend = (f: Friend) => {
     setSelectedId(f.userId);
     socket?.emit('mark-messages-read', { friendId: f.userId });
+    if (f.isGroup) setGroups(prev => prev.map(g => (g.userId === f.userId ? { ...g, lastRead: Date.now() } : g)));
   };
 
-  const unread = (id: string) => messages.filter(m => m.senderId === id && m.status !== 'read').length;
+  const unread = (id: string) => {
+    if (isGroupId(id)) {
+      const since = groups.find(g => g.userId === id)?.lastRead ?? 0;
+      return messages.filter(m => m.recipientId === id && m.senderId !== user.userId && m.timestamp > since && !m.hiddenFor?.includes(user.userId)).length;
+    }
+    return messages.filter(m => m.senderId === id && m.recipientId === user.userId && m.status !== 'read').length;
+  };
 
   const addFriend = async (e: React.FormEvent) => {
     e.preventDefault();
     setAddError('');
     try {
-      const { friend } = await api<{ friend: Friend }>('/api/friends', { friendId: newFriendId });
-      setFriends(prev => [...prev.filter(f => f.userId !== friend.userId), friend]);
+      // Sends a friend request. If they had already asked me, we become friends straight away.
+      const r = await api<{ state: 'sent' | 'friends'; friend?: Friend }>('/api/friends/request', { userId: newFriendId });
+      const friend = r.friend;
+      if (r.state === 'friends' && friend) setFriends(prev => [...prev.filter(f => f.userId !== friend.userId), friend]);
       setNewFriendId('');
       setAddOpen(false);
+      setListNote(r.state === 'friends' ? 'You are now friends.' : 'Friend request sent. You can chat once they accept.');
+      setTimeout(() => setListNote(''), 5000);
+      if (r.state === 'friends') void loadData();
     } catch (err) {
       setAddError(err instanceof ApiError ? err.message : 'Could not add friend');
     }
@@ -494,6 +547,9 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
                     🛡️ Moderation
                   </button>
                 )}
+                <button role="menuitem" onClick={() => { setMenuOpen(false); setNewGroupOpen(true); }} className="w-full text-left px-4 py-3 text-sm text-white hover:bg-slate-800 flex items-center gap-2">
+                  <Users className="w-4 h-4" /> New group
+                </button>
                 <button role="menuitem" onClick={() => { setMenuOpen(false); onLogout(); }} className="w-full text-left px-4 py-3 text-sm text-rose-400 hover:bg-slate-800 flex items-center gap-2">
                   <LogOut className="w-4 h-4" /> Logout
                 </button>
@@ -509,7 +565,23 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
         ) : tab === 'feed' ? (
           <Feed me={user.userId} />
         ) : tab === 'profile' ? (
-          <ProfileSettings key={user.userId} userId={user.userId} onChanged={u => onUserChange({ ...user, ...u })} />
+          <ProfileSettings
+            key={user.userId}
+            userId={user.userId}
+            onChanged={u => onUserChange({ ...user, ...u })}
+            isAdmin={user.isAdmin}
+            onIdChanged={(u, token) => {
+              // New sign-in first, then the app restarts itself with the new User ID.
+              setToken(token);
+              onUserChange({ ...user, ...u });
+            }}
+            onPasswordChanged={token => {
+              setToken(token);
+              if (user.mustChangePassword) onUserChange({ ...user, mustChangePassword: false });
+            }}
+            showLastSeen={user.showLastSeen !== false}
+            onShowLastSeen={show => onUserChange({ ...user, showLastSeen: show })}
+          />
         ) : (
         <>
         <aside className={`${selected ? 'hidden md:flex' : 'flex'} w-full md:w-80 shrink-0 bg-slate-900 border-r border-slate-800 flex-col`}>
@@ -556,13 +628,13 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
                 <ChevronRight className="w-4 h-4 text-slate-500" />
               </button>
             )}
-            {friends.length === 0 ? (
+            {friends.length === 0 && groups.length === 0 ? (
               <div className="text-center py-12 px-4 text-slate-500">
                 <Users className="w-10 h-10 mx-auto mb-2 opacity-30" />
                 <p className="text-xs">No friends yet. Tap Add and enter their User ID.</p>
               </div>
             ) : (
-              [...friends]
+              [...friends, ...groups]
                 // System Broadcast first, then the chats this person pinned, then everyone else.
                 .sort((a, b) => Number(!!b.isAdmin) - Number(!!a.isAdmin) || (a.pinOrder != null && a.pinOrder >= 0 ? a.pinOrder : 99) - (b.pinOrder != null && b.pinOrder >= 0 ? b.pinOrder : 99))
                 .map(f => {
@@ -579,14 +651,14 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
                       <div className="flex items-center gap-3 min-w-0">
                         <div className="relative shrink-0">
                           <Avatar avatar={f.avatar} photoUrl={f.photoUrl} />
-                          <span className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-slate-900 ${f.isOnline ? 'bg-emerald-500' : 'bg-slate-600'}`} />
+                          {!f.isGroup && <span className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-slate-900 ${f.isOnline ? 'bg-emerald-500' : 'bg-slate-600'}`} />}
                         </div>
                         <div className="min-w-0">
                           <h4 className="text-sm font-semibold text-white truncate">
                             {f.name}
                             {f.isAdmin && <span className="ml-2 align-middle px-1.5 py-0.5 rounded-md bg-cyan-500/20 text-cyan-400 text-[10px] font-semibold">Official</span>}
                           </h4>
-                          <span className="text-[10px] font-mono text-cyan-400">{f.isAdmin ? 'Updates from Kite' : f.userId}</span>
+                          <span className="text-[10px] font-mono text-cyan-400">{f.isAdmin ? 'Updates from Kite' : f.isGroup ? `Group · ${f.members?.length ?? 0} people` : f.userId}</span>
                         </div>
                       </div>
                       {n > 0 ? (
@@ -595,7 +667,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
                         <ChevronRight className="w-4 h-4 text-slate-500" />
                       )}
                     </button>
-                    {f.isAdmin ? (
+                    {f.isAdmin || f.isGroup ? (
                       <span className="w-10 shrink-0" />
                     ) : (
                       <button
@@ -637,11 +709,57 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
               onDownload={downloadSharedFile}
               callHint={inCall ? 'You are already in a call' : !selected.isOnline ? `${selected.name} is offline. They will get a call notification.` : ''}
               onSend={(text, replyTo) => (selected.userId === BC ? void api('/api/broadcast', { message: text }).catch(() => {}) : socket?.emit('chat-message', { recipientId: selected.userId, message: text, replyTo }))}
-              onTyping={isTyping => selected.userId !== BC && socket?.emit('typing', { recipientId: selected.userId, isTyping })}
+              onTyping={isTyping => selected.userId !== BC && !selected.isGroup && socket?.emit('typing', { recipientId: selected.userId, isTyping })}
               onEdit={(messageId, text) => socket?.emit('edit-message', { messageId, message: text })}
               onDelete={(messageId, scope) => socket?.emit('delete-message', { messageId, scope })}
               onForward={(friendId, text) => socket?.emit('chat-message', { recipientId: friendId, message: text, forwarded: true })}
-              forwardTargets={friends.filter(f => !f.isAdmin)}
+              forwardTargets={[...friends.filter(f => !f.isAdmin && !f.blockedByMe), ...groups]}
+              onSendPhoto={selected.userId === BC || !mediaCfg ? undefined : (file, onProgress) => sendChatPhoto(file, selected.userId, onProgress)}
+              onSendVoice={selected.userId === BC || !mediaCfg ? undefined : (blob, dur, onProgress) => sendVoiceNote(blob, dur, selected.userId, onProgress)}
+              mediaUrl={chatMediaUrl}
+              nameOf={selected.isGroup ? id => selected.members?.find(m => m.userId === id)?.name ?? friends.find(f => f.userId === id)?.name ?? 'Former member' : undefined}
+              onGroupInfo={selected.isGroup ? () => setGroupInfoOpen(true) : undefined}
+              onLoadOlder={selected.userId === BC ? undefined : async before => {
+                const r = await api<{ messages: ChatMessage[] }>(`/api/messages/older?friendId=${encodeURIComponent(selected.userId)}&before=${before}`).catch(() => ({ messages: [] as ChatMessage[] }));
+                if (r.messages.length) {
+                  setMessages(prev => {
+                    const have = new Set(prev.map(m => m.id));
+                    const add = r.messages.filter(m => !have.has(m.id));
+                    return add.length ? [...add, ...prev].sort((a, b) => a.timestamp - b.timestamp) : prev;
+                  });
+                }
+                return r.messages.length;
+              }}
+              onSearch={selected.userId === BC ? undefined : async q => {
+                const r = await api<{ hits: { id: string; timestamp: number }[] }>(`/api/messages/search?friendId=${encodeURIComponent(selected.userId)}&q=${encodeURIComponent(q)}`).catch(() => ({ hits: [] }));
+                return r.hits;
+              }}
+              onLoadRange={selected.userId === BC ? undefined : async (after, before) => {
+                const r = await api<{ messages: ChatMessage[] }>(`/api/messages/older?friendId=${encodeURIComponent(selected.userId)}&before=${before}&after=${after}`).catch(() => ({ messages: [] as ChatMessage[] }));
+                if (!r.messages.length) return;
+                setMessages(prev => {
+                  const have = new Set(prev.map(m => m.id));
+                  const add = r.messages.filter(m => !have.has(m.id));
+                  return add.length ? [...add, ...prev].sort((a, b) => a.timestamp - b.timestamp) : prev;
+                });
+              }}
+              onBlock={selected.userId === BC || selected.isAdmin || selected.isGroup ? undefined : async blocked => {
+                try {
+                  await api('/api/block', { userId: selected.userId, blocked });
+                  setFriends(prev => prev.map(f => (f.userId === selected.userId ? { ...f, blockedByMe: blocked } : f)));
+                  return null;
+                } catch (err) {
+                  return err instanceof ApiError ? err.message : 'That did not work. Please try again.';
+                }
+              }}
+              onReport={selected.userId === BC || selected.isAdmin || selected.isGroup ? undefined : async reason => {
+                try {
+                  await api('/api/report-user', { userId: selected.userId, reason });
+                  return null;
+                } catch (err) {
+                  return err instanceof ApiError ? err.message : 'Could not send the report. Please try again.';
+                }
+              }}
               onReact={(messageId, reaction) => socket?.emit('message-reaction', { messageId, reaction })}
               onPin={pinMessage}
               onCall={type => calls.startCall(selected, type)}
@@ -720,10 +838,47 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
         </Modal>
       )}
 
+      {newGroupOpen && (
+        <NewGroupBox
+          friends={friends.filter(f => !f.isAdmin && !f.blockedByMe)}
+          onClose={() => setNewGroupOpen(false)}
+          onCreated={id => {
+            setNewGroupOpen(false);
+            void loadData();
+            setTab('chats');
+            setSelectedId(id);
+          }}
+        />
+      )}
+      {groupInfoOpen && selected?.isGroup && (
+        <GroupInfoBox
+          group={selected}
+          me={user.userId}
+          friends={friends}
+          onClose={() => setGroupInfoOpen(false)}
+          onChanged={() => void loadData()}
+          onLeft={() => {
+            setGroupInfoOpen(false);
+            setSelectedId(null);
+            setGroups(prev => prev.filter(g => g.userId !== selected.userId));
+          }}
+        />
+      )}
+
+      {user.mustChangePassword && (
+        <ChangePasswordBox
+          forced
+          onDone={token => {
+            setToken(token);
+            onUserChange({ ...user, mustChangePassword: false });
+          }}
+        />
+      )}
+
       {addOpen && (
         <Modal onClose={() => setAddOpen(false)}>
           <h3 className="text-lg font-bold text-white mb-1">Add friend</h3>
-          <p className="text-xs text-slate-400 mb-5">Enter your friend's User ID. You'll both see each other in your lists.</p>
+          <p className="text-xs text-slate-400 mb-5">Enter your friend's User ID. They'll get a friend request, and you can chat once they accept.</p>
           {addError && <div role="alert" className="mb-3 p-2.5 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-400 text-xs">{addError}</div>}
           <form onSubmit={addFriend} className="space-y-4">
             <input
@@ -734,7 +889,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
               placeholder="e.g. SAM456"
               className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm font-mono tracking-wider text-white focus:outline-none focus:border-cyan-500"
             />
-            <button type="submit" className="w-full h-11 bg-cyan-500 hover:bg-cyan-400 text-accent-ink font-semibold rounded-xl text-sm">Add to friends</button>
+            <button type="submit" className="w-full h-11 bg-cyan-500 hover:bg-cyan-400 text-accent-ink font-semibold rounded-xl text-sm">Send friend request</button>
           </form>
         </Modal>
       )}

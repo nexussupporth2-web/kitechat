@@ -1,4 +1,5 @@
 import { io, type Socket } from 'socket.io-client';
+import { getToken } from './api.ts';
 
 type Handler = (...args: any[]) => void; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -113,7 +114,8 @@ export class KiteSocket {
   private openWs() {
     if (this.closed || (this.ws && this.ws.readyState <= WebSocket.OPEN)) return;
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(this.token || '')}`);
+    // Always the newest sign-in: it changes after a password change.
+    const ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(getToken() || this.token || '')}`);
     this.ws = ws;
     ws.onmessage = ev => {
       if (typeof ev.data !== 'string' || ev.data === 'pong') return;

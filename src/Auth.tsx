@@ -13,6 +13,25 @@ export default function Auth({ onAuthed }: { onAuthed: (user: User) => void }) {
   const [blocked, setBlocked] = useState(false);
   const [appeal, setAppeal] = useState('');
   const [appealNote, setAppealNote] = useState('');
+  const [forgotOpen, setForgotOpen] = useState(false);
+  const [forgotMsg, setForgotMsg] = useState('');
+  const [forgotNote, setForgotNote] = useState('');
+
+  // Forgot password: the request goes to the admin, who gives a temporary password.
+  const sendForgot = async () => {
+    if (!userId.trim()) return setForgotNote('Type your User ID above first.');
+    setBusy(true);
+    setForgotNote('');
+    try {
+      await api('/api/password-reset-request', { userId, message: forgotMsg });
+      setForgotNote('Request sent. The admin will contact you with a temporary password.');
+      setForgotMsg('');
+    } catch (err) {
+      setForgotNote(err instanceof ApiError ? err.message : 'Could not send the request. Please try again.');
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -128,6 +147,31 @@ export default function Auth({ onAuthed }: { onAuthed: (user: User) => void }) {
             {busy ? 'Please wait…' : view === 'register' ? 'Create Account' : 'Sign In'}
           </button>
         </form>
+
+        {view === 'login' && (
+          <div className="mt-4 text-center">
+            <button type="button" onClick={() => { setForgotOpen(o => !o); setForgotNote(''); }} className="text-xs text-cyan-400 hover:text-cyan-300 underline underline-offset-2">
+              Forgot password?
+            </button>
+            {forgotOpen && (
+              <div className="mt-3 space-y-2 text-left">
+                <p className="text-[11px] text-slate-400">Type your User ID above. The admin will get your request and send you a temporary password.</p>
+                <textarea
+                  className={`${input} resize-none`}
+                  rows={2}
+                  maxLength={200}
+                  value={forgotMsg}
+                  onChange={e => setForgotMsg(e.target.value)}
+                  placeholder="How can the admin reach you? (for example your phone number)"
+                />
+                <button type="button" onClick={sendForgot} disabled={busy} className="w-full h-10 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-60 text-white text-sm font-medium">
+                  Send request to admin
+                </button>
+                {forgotNote && <p role="status" className="text-xs text-cyan-400 text-center">{forgotNote}</p>}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -193,3 +193,37 @@ export async function loadFeed() {
 export function deletePost(id: string) {
   return api(`/api/posts/${id}`, undefined, 'DELETE');
 }
+
+// ---------- photos and voice notes shown inside a chat (kept 30 days) ----------
+
+/** Send a photo that shows as a picture in the chat (to a friend or a group). It is shrunk first. */
+export async function sendChatPhoto(file: File, recipientId: string, onProgress: ProgressFn) {
+  onProgress('compressing', 0);
+  const blob = await compressImage(file);
+  onProgress('compressing', 1);
+  const mime = blob.type || 'image/jpeg';
+  if (blob.size > 1024 * 1024) throw new Error('This photo is too large even after shrinking it.');
+  const s = await api<SignResponse>('/api/media/sign', { kind: 'chat', mime, size: blob.size, name: 'photo', recipientId });
+  await uploadToStorage(s.uploadUrl, blob, mime, p => onProgress('uploading', p));
+  await api('/api/chatmedia', { key: s.key, recipientId, kind: 'photo' });
+}
+
+/** Send a recorded voice note. */
+export async function sendVoiceNote(blob: Blob, durationSec: number, recipientId: string, onProgress: ProgressFn) {
+  // The recorder may say "audio/webm;codecs=opus": storage only needs the first part.
+  const mime = (blob.type || 'audio/webm').split(';')[0];
+  if (blob.size > 5 * 1024 * 1024) throw new Error('This voice note is too long.');
+  const s = await api<SignResponse>('/api/media/sign', { kind: 'chat', mime, size: blob.size, name: 'voice', recipientId });
+  await uploadToStorage(s.uploadUrl, blob, mime, p => onProgress('uploading', p));
+  await api('/api/chatmedia', { key: s.key, recipientId, kind: 'voice', dur: durationSec });
+}
+
+const mediaUrls = new Map<string, { url: string; at: number }>();
+/** A link to show a chat photo / play a voice note (remembered for 50 minutes). */
+export async function chatMediaUrl(messageId: string): Promise<string> {
+  const hit = mediaUrls.get(messageId);
+  if (hit && Date.now() - hit.at < 50 * 60 * 1000) return hit.url;
+  const { url } = await api<{ url: string }>(`/api/chatmedia/${encodeURIComponent(messageId)}`);
+  mediaUrls.set(messageId, { url, at: Date.now() });
+  return url;
+}

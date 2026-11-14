@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Flag, MessageCircle, MoreHorizontal, Send, Trash2, X } from 'lucide-react';
+import { Flag, MessageCircle, MoreHorizontal, Send, Share2, Trash2, X } from 'lucide-react';
 import { api, ApiError } from './api.ts';
 import Avatar from './Avatar.tsx';
+import ShareSheet from './ShareSheet.tsx';
 import type { User } from './types.ts';
 
 interface Post {
@@ -141,6 +142,7 @@ function PostCard({
   const [comments, setComments] = useState<Comment[]>([]);
   const [text, setText] = useState('');
   const [note, setNote] = useState('');
+  const [sharing, setSharing] = useState(false);
 
   const react = async (emoji: string | null) => {
     setPicker(false);
@@ -292,7 +294,11 @@ function PostCard({
           {post.mine && (
             <button onClick={() => setPicker(!picker)} className="ml-auto text-xs text-cyan-400">Change reaction</button>
           )}
+          <button onClick={() => setSharing(true)} className={`${post.mine ? '' : 'ml-auto '}text-slate-100`} aria-label="Share">
+            <Share2 className="w-7 h-7" />
+          </button>
         </div>
+        {sharing && <ShareSheet postId={post.id} onClose={() => setSharing(false)} />}
         {picker && (
           <>
             <div className="fixed inset-0 z-30" onClick={() => setPicker(false)} />
@@ -375,6 +381,9 @@ export function Moderation({ onClose, onChanged }: { onClose: () => void; onChan
   const [blocked, setBlocked] = useState<Blocked[]>([]);
   const [note, setNote] = useState('Loading…');
   const [accounts, setAccounts] = useState<{ userId: string; name: string; createdAt: number; friends: number; posts: number }[]>([]);
+  const [resets, setResets] = useState<{ userId: string; name: string; at: number; message: string }[]>([]);
+  const [tempPw, setTempPw] = useState<{ name: string; pw: string } | null>(null);
+  const [reported, setReported] = useState<{ userId: string; name: string; blocked: boolean; reports: { by: string; reason: string; at: number }[] }[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -386,6 +395,13 @@ export function Moderation({ onClose, onChanged }: { onClose: () => void; onChan
       setBlocked(r.blocked);
       setAccounts(u.users);
       setNote('');
+      // People reported from a chat (a server without this list just shows none).
+      api<{ people: typeof resets }>('/api/admin/reset-requests')
+        .then(x => setResets(x.people))
+        .catch(() => setResets([]));
+      api<{ people: typeof reported }>('/api/admin/reported-users')
+        .then(x => setReported(x.people))
+        .catch(() => setReported([]));
     } catch (e) {
       setNote(e instanceof ApiError ? e.message : 'Could not load');
     }
@@ -412,6 +428,64 @@ export function Moderation({ onClose, onChanged }: { onClose: () => void; onChan
           <button onClick={onClose} className="text-slate-400" aria-label="Close"><X className="w-5 h-5" /></button>
         </div>
         {note && <p className="text-xs text-slate-400">{note}</p>}
+
+        <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Password reset requests ({resets.length})</h4>
+        {tempPw && (
+          <div className="rounded-2xl bg-emerald-500/10 border border-emerald-500/30 p-3 text-sm space-y-2">
+            <div className="text-emerald-300 text-xs">Temporary password for {tempPw.name}. Send it to them by phone or WhatsApp. They will choose a new one after signing in.</div>
+            <div className="font-mono text-xl tracking-widest text-white text-center select-all">{tempPw.pw}</div>
+            <div className="flex gap-2">
+              <button onClick={() => void navigator.clipboard?.writeText(tempPw.pw).catch(() => {})} className="flex-1 px-3 py-1.5 rounded-lg bg-slate-700 text-white text-xs">Copy</button>
+              <button onClick={() => setTempPw(null)} className="flex-1 px-3 py-1.5 rounded-lg bg-slate-800 text-slate-300 text-xs">Done</button>
+            </div>
+          </div>
+        )}
+        {resets.length === 0 && <p className="text-xs text-slate-500">None.</p>}
+        {resets.map(p => (
+          <div key={p.userId} className="rounded-2xl bg-slate-800/60 p-3 text-sm space-y-2">
+            <div className="text-white font-semibold">{p.name} <span className="text-slate-400 font-normal font-mono text-xs">({p.userId})</span></div>
+            <div className="text-xs text-slate-300"><span className="text-slate-400">{new Date(p.at).toLocaleString()}:</span> {p.message || 'no message'}</div>
+            <div className="flex gap-2">
+              <button
+                onClick={() =>
+                  window.confirm(`Set a temporary password for ${p.name}? Their old password stops working.`) &&
+                  void run(async () => {
+                    const r = await api<{ tempPassword: string }>('/api/admin/reset-requests/action', { userId: p.userId, action: 'reset' });
+                    setTempPw({ name: p.name, pw: r.tempPassword });
+                  })
+                }
+                className="px-3 py-1.5 rounded-lg bg-cyan-500/20 text-cyan-300 text-xs font-semibold"
+              >
+                Set temporary password
+              </button>
+              <button onClick={() => run(() => api('/api/admin/reset-requests/action', { userId: p.userId, action: 'dismiss' }))} className="px-3 py-1.5 rounded-lg bg-slate-700 text-white text-xs">Dismiss</button>
+            </div>
+          </div>
+        ))}
+
+        <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Reported people ({reported.length})</h4>
+        {reported.length === 0 && <p className="text-xs text-slate-500">None.</p>}
+        {reported.map(p => (
+          <div key={p.userId} className="rounded-2xl bg-slate-800/60 p-3 text-sm space-y-2">
+            <div className="text-white font-semibold">{p.name} <span className="text-slate-400 font-normal font-mono text-xs">({p.userId})</span></div>
+            {p.reports.map((r, i) => (
+              <div key={i} className="text-xs text-slate-300">
+                <span className="text-slate-400">{r.by} · {new Date(r.at).toLocaleDateString()}:</span> {r.reason || 'no reason given'}
+              </div>
+            ))}
+            <div className="flex gap-2">
+              {!p.blocked && (
+                <button
+                  onClick={() => window.confirm(`Block ${p.name}'s account? They will be signed out and can send an appeal.`) && void run(() => api('/api/admin/reported-users/action', { userId: p.userId, action: 'block' }))}
+                  className="px-3 py-1.5 rounded-lg bg-rose-500/20 text-rose-300 text-xs font-semibold"
+                >
+                  Block account
+                </button>
+              )}
+              <button onClick={() => run(() => api('/api/admin/reported-users/action', { userId: p.userId, action: 'dismiss' }))} className="px-3 py-1.5 rounded-lg bg-slate-700 text-white text-xs">Dismiss</button>
+            </div>
+          </div>
+        ))}
 
         <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400">Accounts ({accounts.length})</h4>
         {accounts.length === 0 && <p className="text-xs text-slate-500">No other accounts.</p>}
