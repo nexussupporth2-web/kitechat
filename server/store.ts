@@ -81,6 +81,8 @@ export interface User {
   resetRequest?: { at: number; message: string };
   /** For each group: when this person last read it (to count unread messages). */
   groupRead?: Record<string, number>;
+  /** Short ready answers for chats (up to 10). */
+  quickReplies?: string[];
   /** When this person was last connected. */
   lastSeen?: number;
   /** False = friends do not see "last seen". */
