@@ -670,6 +670,20 @@ export class Hub extends DurableObject {
       return json({ user: { ...this.publicUser(me), photoUrl: await this.photoUrlOf(me), showLastSeen: me.showLastSeen !== false, mustChangePassword: !!me.mustChangePassword } });
     }
 
+    if (path === '/api/account/quick-replies') {
+      if (req.method === 'GET') return json({ replies: me.quickReplies ?? [] });
+      if (req.method === 'POST') {
+        const list = Array.isArray(body.replies) ? (body.replies as unknown[]) : [];
+        me.quickReplies = list
+          .filter((x): x is string => typeof x === 'string')
+          .map(x => x.trim().slice(0, 300))
+          .filter(Boolean)
+          .slice(0, 10);
+        this.saveUser(me);
+        return json({ replies: me.quickReplies });
+      }
+    }
+
     if (req.method === 'POST' && path === '/api/account/last-seen') {
       me.showLastSeen = body.show !== false;
       this.saveUser(me);
