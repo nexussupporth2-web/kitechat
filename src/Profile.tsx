@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowLeft, Check, MessageSquare, Play, Plus, Trash2, UserPlus, X } from 'lucide-react';
 import { api } from './api.ts';
 import BusinessInfo, { type Business } from './BusinessInfo.tsx';
+import MediaActions from './MediaActions.tsx';
 import { deletePost, phaseLabel, publishPost, type MediaConfig, type Phase } from './media.ts';
 
 interface Item {
@@ -12,6 +13,7 @@ interface Item {
   caption: string;
   createdAt: number;
   url: string;
+  sharedBy?: string;
 }
 
 interface ProfileData {
@@ -41,8 +43,8 @@ interface Props {
   isMe: boolean;
   /** Shows a back arrow (used when this is opened over a chat). */
   onBack?: () => void;
-  /** Shown for a friend's profile. */
-  onMessage?: () => void;
+  /** Shown for a friend's profile. `draft` is text to put in the typing box (from "Enquire"). */
+  onMessage?: (draft?: string) => void;
   /** Called after a friend request is accepted, so the chat list can refresh. */
   onFriendsChanged?: () => void;
   /** Extra content shown under the album (used by the Stories & Reels page). */
@@ -55,7 +57,8 @@ const isVideo = (i: Item) => i.mime.startsWith('video/');
 export default function Profile({ userId, isMe, onBack, onMessage, onFriendsChanged, children }: Props) {
   const [data, setData] = useState<ProfileData | null>(null);
   const [cfg, setCfg] = useState<MediaConfig | null>(null);
-  const [tab, setTab] = useState<'all' | 'videos' | 'images'>('all');
+  const [tab, setTab] = useState<'all' | 'videos' | 'images' | 'received'>('all');
+  const [received, setReceived] = useState<Item[]>([]);
   const [error, setError] = useState('');
   const [progress, setProgress] = useState<{ phase: Phase; p: number } | null>(null);
   const [open, setOpen] = useState<Item | null>(null);
@@ -82,6 +85,13 @@ export default function Profile({ userId, isMe, onBack, onMessage, onFriendsChan
     setData(null);
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (!isMe || tab !== 'received') return;
+    api<{ items: Item[] }>('/api/received')
+      .then(r => setReceived(r.items))
+      .catch(() => setReceived([]));
+  }, [isMe, tab]);
 
   /** "Become friends": ask, or accept when they already asked me. */
   const friendAction = async () => {
@@ -157,9 +167,45 @@ export default function Profile({ userId, isMe, onBack, onMessage, onFriendsChan
     }
   };
 
+  // While loading or when the profile cannot be shown, there is still a way back.
+  const backBtn = onBack ? (
+    <button onClick={onBack} className="absolute top-3 left-3 w-10 h-10 rounded-full hover:bg-slate-800 text-slate-300 flex items-center justify-center" aria-label="Back">
+      <ArrowLeft className="w-5 h-5" />
+    </button>
+  ) : null;
   if (!data) {
+    // A private profile (for example opened from a shop's QR code): still allow a friend request.
+    if (error && !isMe) {
+      return (
+        <div className="relative flex-1 flex flex-col items-center justify-center gap-3 p-8 text-center">
+          {backBtn}
+          <p className="text-sm text-slate-300">
+            This profile is only visible to friends. Send <span className="font-mono text-cyan-400">{userId}</span> a friend request to chat.
+          </p>
+          <button
+            onClick={async () => {
+              setNotice('');
+              try {
+                const r = await api<{ state: 'sent' | 'friends' }>('/api/friends/request', { userId });
+                if (r.state === 'friends') {
+                  onFriendsChanged?.();
+                  void load();
+                } else setNotice('Friend request sent. You can chat once they accept.');
+              } catch (e) {
+                setNotice(e instanceof Error ? e.message : 'Could not send the request');
+              }
+            }}
+            className="px-5 py-3 rounded-2xl bg-cyan-500 hover:bg-cyan-400 text-accent-ink text-sm font-semibold flex items-center gap-2"
+          >
+            <UserPlus className="w-4 h-4" /> Send friend request
+          </button>
+          {notice && <p role="status" className="text-xs text-amber-300">{notice}</p>}
+        </div>
+      );
+    }
     return (
-      <div className="flex-1 flex items-center justify-center text-sm text-slate-400 p-8 text-center">
+      <div className="relative flex-1 flex items-center justify-center text-sm text-slate-400 p-8 text-center">
+        {backBtn}
         {error || 'Loading profile…'}
       </div>
     );
@@ -167,7 +213,7 @@ export default function Profile({ userId, isMe, onBack, onMessage, onFriendsChan
 
   const statuses = data.statuses ?? [];
   const hasStatus = statuses.length > 0;
-  const items = data.items.filter(i => (tab === 'all' ? true : tab === 'videos' ? isVideo(i) : !isVideo(i)));
+  const items = tab === 'received' ? received : data.items.filter(i => (tab === 'all' ? true : tab === 'videos' ? isVideo(i) : !isVideo(i)));
   const stats: [number, string][] = [
     [data.stats.album, 'Album'],
     [data.stats.friends, 'Friends']
@@ -278,20 +324,20 @@ export default function Profile({ userId, isMe, onBack, onMessage, onFriendsChan
           ))}
         </div>
 
-        <div className="mt-6 grid grid-cols-3 border-b border-slate-800">
-          {(['all', 'videos', 'images'] as const).map(t => (
+        <div className={`mt-6 grid ${isMe ? 'grid-cols-4' : 'grid-cols-3'} border-b border-slate-800`}>
+          {(isMe ? (['all', 'videos', 'images', 'received'] as const) : (['all', 'videos', 'images'] as const)).map(t => (
             <button
               key={t}
               onClick={() => setTab(t)}
               className={`py-3 text-base font-medium border-b-2 -mb-px transition-colors ${tab === t ? 'text-white border-cyan-500' : 'text-slate-500 border-transparent'}`}
             >
-              {t === 'all' ? 'All' : t === 'videos' ? 'Videos' : 'Images'}
+              {t === 'all' ? 'All' : t === 'videos' ? 'Videos' : t === 'images' ? 'Images' : 'Received'}
             </button>
           ))}
         </div>
 
         {items.length === 0 ? (
-          <p className="text-center text-sm text-slate-500 py-12">{isMe ? `${tab === 'all' ? 'Nothing here' : `No ${tab}`} yet. Tap “Add photo or video”.` : `${tab === 'all' ? 'Nothing here' : `No ${tab}`} yet.`}</p>
+          <p className="text-center text-sm text-slate-500 py-12">{tab === 'received' ? 'Nothing received yet. Photos and videos your friends share with you will appear here.' : isMe ? `${tab === 'all' ? 'Nothing here' : `No ${tab}`} yet. Tap “Add photo or video”.` : `${tab === 'all' ? 'Nothing here' : `No ${tab}`} yet.`}</p>
         ) : (
           <div className="grid grid-cols-3 gap-2 p-2">
             {items.map(item => (
@@ -306,11 +352,28 @@ export default function Profile({ userId, isMe, onBack, onMessage, onFriendsChan
                 ) : (
                   <img src={item.url} alt="" loading="lazy" className="w-full h-full object-cover" />
                 )}
+                {item.sharedBy && (
+                  <span className="absolute top-1 left-1 max-w-[90%] truncate rounded-full bg-black/60 px-2 py-0.5 text-[10px] text-fixed-white">from {item.sharedBy}</span>
+                )}
               </button>
             ))}
           </div>
         )}
-        {!isMe && <BusinessInfo b={data.business} hideCover />}
+        {!isMe && (
+          <BusinessInfo
+            b={data.business}
+            hideCover
+            enquire={{
+              // Friends only: others are asked to send a friend request first.
+              label: data.isFriend ? 'Enquire' : data.requestState === 'sent' ? 'Request sent' : data.requestState === 'received' ? 'Accept request to enquire' : 'Send a friend request to enquire',
+              disabled: !data.isFriend && (data.requestState === 'sent' || friendBusy),
+              onClick: p => {
+                if (data.isFriend) onMessage?.(`Hi, I'm interested in ${p.name}${p.price ? ` (${p.price})` : ''}. `);
+                else void friendAction();
+              }
+            }}
+          />
+        )}
         {children}
       </div>
 
@@ -363,7 +426,7 @@ export default function Profile({ userId, isMe, onBack, onMessage, onFriendsChan
           <button onClick={() => setOpen(null)} className="absolute top-4 right-4 w-10 h-10 rounded-full bg-black/50 text-fixed-white flex items-center justify-center" aria-label="Close">
             <X className="w-5 h-5" />
           </button>
-          {isMe && (
+          {isMe && !open.sharedBy && (
             <button
               onClick={e => {
                 e.stopPropagation();
@@ -382,6 +445,7 @@ export default function Profile({ userId, isMe, onBack, onMessage, onFriendsChan
               <img src={open.url} alt="" className="max-w-full max-h-[100dvh] object-contain" />
             )}
           </div>
+          <MediaActions key={open.id} postId={open.id} lift={isVideo(open)} />
         </div>
       )}
     </div>

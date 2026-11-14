@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowLeft, Ban, ChevronDown, ChevronUp, Info, Mic, Search, Square, Bold, Code, Copy, CornerUpLeft, Download, FileText, Flag, Forward, Italic, Languages, MoreVertical, Pencil, Trash2, MessageSquare, Paperclip, Phone, Pin, Strikethrough, Video, X } from 'lucide-react';
+import { ArrowLeft, Ban, ChevronDown, ChevronUp, Info, Mic, Search, Square, Zap, Bold, Code, Copy, CornerUpLeft, Download, FileText, Flag, Forward, Italic, Languages, MoreVertical, Pencil, Trash2, MessageSquare, Paperclip, Phone, Pin, Strikethrough, Video, X } from 'lucide-react';
 import Avatar from './Avatar.tsx';
 import KiteIcon from './KiteIcon.tsx';
 import { formatBytes } from './api.ts';
@@ -59,6 +59,10 @@ interface Props {
   nameOf?: (userId: string) => string;
   /** Group: open the members screen. */
   onGroupInfo?: () => void;
+  /** Text to put in the typing box (for example from a product's "Enquire" button). */
+  draft?: { text: string; at: number };
+  /** My saved quick replies (shown under the lightning button). */
+  quickReplies?: string[];
 }
 
 /** "last seen today at 3:40 pm", "last seen yesterday at 9:05 am" or "last seen 12 Nov". */
@@ -72,7 +76,7 @@ function lastSeenText(at: number) {
   return `last seen ${d.toLocaleDateString([], { day: 'numeric', month: 'short', ...(d.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) })}`;
 }
 
-export default function Chat({ me, friend, messages, friendTyping, callDisabled, callHint, filesEnabled, onSendFile, onDownload, onSend, onEdit, onDelete, onForward, forwardTargets, onTyping, onReact, onPin, onCall, onBack, onOpenProfile, wallpaperUrl, readOnly, onBlock, onReport, onLoadOlder, onSearch, onLoadRange, onSendPhoto, onSendVoice, mediaUrl, nameOf, onGroupInfo }: Props) {
+export default function Chat({ me, friend, messages, friendTyping, callDisabled, callHint, filesEnabled, onSendFile, onDownload, onSend, onEdit, onDelete, onForward, forwardTargets, onTyping, onReact, onPin, onCall, onBack, onOpenProfile, wallpaperUrl, readOnly, onBlock, onReport, onLoadOlder, onSearch, onLoadRange, onSendPhoto, onSendVoice, mediaUrl, nameOf, onGroupInfo, draft, quickReplies = [] }: Props) {
   const isGroup = !!friend.isGroup;
   const [input, setInput] = useState('');
   const [progress, setProgress] = useState<{ phase: Phase; p: number } | null>(null);
@@ -429,6 +433,19 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
   };
 
   const taRef = useRef<HTMLTextAreaElement>(null);
+  // A ready text (from "Enquire") goes into the typing box.
+  useEffect(() => {
+    if (!draft) return;
+    setInput(draft.text);
+    setTimeout(() => {
+      const ta = taRef.current;
+      if (ta) {
+        ta.focus();
+        ta.setSelectionRange(ta.value.length, ta.value.length);
+      }
+    }, 80);
+  }, [draft?.at]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [quickOpen, setQuickOpen] = useState(false);
   const [hasSel, setHasSel] = useState(false);
   const grow = () => {
     const t = taRef.current;
@@ -988,7 +1005,7 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
           <button onClick={() => void toggleBlock()} className="text-cyan-400 font-semibold underline underline-offset-2">Unblock</button>
         </div>
       )}
-      {!readOnly && !blockedByMe && <form onSubmit={submit} className="p-3 sm:p-4 border-t border-slate-800 bg-slate-900/40 flex gap-3 items-end">
+      {!readOnly && !blockedByMe && <form onSubmit={submit} className="relative p-3 sm:p-4 border-t border-slate-800 bg-slate-900/40 flex gap-3 items-end">
         {filesEnabled && (
           <>
             <input ref={fileInput} type="file" className="hidden" onChange={pickFile} />
@@ -1002,6 +1019,39 @@ export default function Chat({ me, friend, messages, friendTyping, callDisabled,
             >
               <Paperclip className="w-4 h-4" />
             </button>
+          </>
+        )}
+        {quickReplies.length > 0 && !recording && (
+          <>
+            <button
+              type="button"
+              onClick={() => setQuickOpen(o => !o)}
+              className={`w-11 h-11 shrink-0 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 flex items-center justify-center border ${quickOpen ? 'border-amber-400' : 'border-slate-700'}`}
+              title="Quick replies"
+              aria-label="Quick replies"
+              aria-expanded={quickOpen}
+            >
+              <Zap className="w-4 h-4" />
+            </button>
+            {quickOpen && (
+              <div className="absolute left-3 right-3 bottom-full mb-2 z-30 max-h-64 overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 shadow-xl p-2">
+                <p className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">Quick replies</p>
+                {quickReplies.map((q, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => {
+                      setInput(cur => (cur.trim() ? `${cur.trimEnd()} ${q}` : q));
+                      setQuickOpen(false);
+                      setTimeout(() => taRef.current?.focus(), 50);
+                    }}
+                    className="w-full text-left px-3 py-2.5 rounded-lg text-sm text-white hover:bg-slate-800 break-words"
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
+            )}
           </>
         )}
         {recording ? (

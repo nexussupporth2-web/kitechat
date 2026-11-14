@@ -14,6 +14,14 @@ export default function Auth({ onAuthed }: { onAuthed: (user: User) => void }) {
   const [appeal, setAppeal] = useState('');
   const [appealNote, setAppealNote] = useState('');
   const [forgotOpen, setForgotOpen] = useState(false);
+  // Opened from a shop's QR code: say whose profile opens after signing in.
+  const [pendingProfile] = useState(() => {
+    try {
+      return sessionStorage.getItem('kite.openProfile') || '';
+    } catch {
+      return '';
+    }
+  });
   const [forgotMsg, setForgotMsg] = useState('');
   const [forgotNote, setForgotNote] = useState('');
 
@@ -86,6 +94,12 @@ export default function Auth({ onAuthed }: { onAuthed: (user: User) => void }) {
           <button type="button" onClick={() => { setView('login'); setError(''); }} className={tab(view === 'login')}>Sign In</button>
           <button type="button" onClick={() => { setView('register'); setError(''); }} className={tab(view === 'register')}>Register</button>
         </div>
+
+        {pendingProfile && (
+          <p className="mb-4 p-3 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 text-xs text-center">
+            Sign in or register to open <span className="font-mono font-semibold">{pendingProfile}</span>'s profile.
+          </p>
+        )}
 
         {error && (
           <div role="alert" className="mb-4 p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-400 text-xs text-center">

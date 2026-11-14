@@ -1,6 +1,6 @@
 import { Component, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { KiteSocket } from './socket';
-import { Bell, Check, ChevronRight, Copy, LogOut, MoreVertical, Phone, Pin, Sparkles, UserPlus, Users, Video, X } from 'lucide-react';
+import { Bell, Check, ChevronRight, Copy, Download, LogOut, MoreVertical, Phone, Pin, Sparkles, UserPlus, Users, Video, X } from 'lucide-react';
 import { api, ApiError, getToken, loadToken, setToken } from './api.ts';
 import Auth from './Auth.tsx';
 import Avatar from './Avatar.tsx';
@@ -17,6 +17,48 @@ import { useCall } from './useCall.ts';
 import { DEFAULT_WALLPAPER, loadChatWallpaper } from './wallpaper.ts';
 import { isGroupId, type ChatMessage, type Friend, type User } from './types.ts';
 import { GroupInfoBox, NewGroupBox } from './Groups.tsx';
+import { qrMatrix, qrSvg } from './qr.ts';
+
+// A shop's QR code opens KiteChat with "?u=THEIR_ID". Remember it (also through signing in), then clean the address.
+const OPEN_PROFILE = 'kite.openProfile';
+try {
+  const u = new URLSearchParams(location.search).get('u');
+  if (u) {
+    sessionStorage.setItem(OPEN_PROFILE, u.toUpperCase().replace(/[^A-Z0-9_]/g, '').slice(0, 20));
+    history.replaceState(null, '', location.pathname);
+  }
+} catch {
+  /* private mode: the QR link just opens the app */
+}
+const profileLink = (userId: string) => `${location.origin}/?u=${encodeURIComponent(userId)}`;
+
+/** Save the QR code as a picture (with the name under it) to print or share. */
+function downloadQr(userId: string, name: string) {
+  const m = qrMatrix(profileLink(userId));
+  const cell = 12;
+  const border = 4;
+  const side = (m.length + border * 2) * cell;
+  const canvas = document.createElement('canvas');
+  canvas.width = side;
+  canvas.height = side + 110;
+  const g = canvas.getContext('2d');
+  if (!g) return;
+  g.fillStyle = '#fff';
+  g.fillRect(0, 0, canvas.width, canvas.height);
+  g.fillStyle = '#000';
+  m.forEach((row, y) => row.forEach((dark, x) => dark && g.fillRect((x + border) * cell, (y + border) * cell, cell, cell)));
+  g.textAlign = 'center';
+  g.font = 'bold 34px sans-serif';
+  g.fillText(name.slice(0, 30), side / 2, side + 30);
+  g.font = '24px sans-serif';
+  g.fillText('Scan to chat with us on KiteChat', side / 2, side + 72);
+  const a = document.createElement('a');
+  a.href = canvas.toDataURL('image/png');
+  a.download = `kitechat-qr-${userId}.png`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
 
 /** Shows a friendly screen instead of a blank page if something crashes, and recovers by itself. */
 class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
@@ -112,6 +154,18 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
   const [socket, setSocket] = useState<KiteSocket | null>(null);
   const [friends, setFriends] = useState<Friend[]>([]);
   const [groups, setGroups] = useState<Friend[]>([]);
+  // My quick replies (for the lightning button in chats).
+  const [quickReplies, setQuickReplies] = useState<string[]>([]);
+  useEffect(() => {
+    api<{ replies: string[] }>('/api/account/quick-replies')
+      .then(r => setQuickReplies(r.replies))
+      .catch(() => {});
+    const onSaved = (e: Event) => setQuickReplies((e as CustomEvent<string[]>).detail ?? []);
+    window.addEventListener('kite-quick-replies', onSaved);
+    return () => window.removeEventListener('kite-quick-replies', onSaved);
+  }, []);
+  // Text to put in a chat's typing box (from a product's "Enquire" button).
+  const [draft, setDraft] = useState<{ chatId: string; text: string; at: number } | null>(null);
   const [newGroupOpen, setNewGroupOpen] = useState(false);
   const [groupInfoOpen, setGroupInfoOpen] = useState(false);
   const [requests, setRequests] = useState<{ userId: string; name: string; avatar: string; photoUrl: string | null }[]>([]);
@@ -139,6 +193,19 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
   const [connected, setConnected] = useState(true);
   const [wallpaperUrl, setWallpaperUrl] = useState(DEFAULT_WALLPAPER);
   const [notifState, setNotifState] = useState(notificationState());
+
+  // Opened from a shop's QR code: show that profile once signed in.
+  useEffect(() => {
+    try {
+      const id = sessionStorage.getItem(OPEN_PROFILE);
+      if (!id) return;
+      sessionStorage.removeItem(OPEN_PROFILE);
+      if (id !== user.userId) setProfileFor(id);
+    } catch {
+      /* nothing remembered */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const filesEnabled = !!mediaCfg?.enabled;
 
   const selectedRef = useRef<string | null>(null);
@@ -717,6 +784,8 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
               onSendPhoto={selected.userId === BC || !mediaCfg ? undefined : (file, onProgress) => sendChatPhoto(file, selected.userId, onProgress)}
               onSendVoice={selected.userId === BC || !mediaCfg ? undefined : (blob, dur, onProgress) => sendVoiceNote(blob, dur, selected.userId, onProgress)}
               mediaUrl={chatMediaUrl}
+              draft={draft && draft.chatId === selected.userId ? draft : undefined}
+              quickReplies={selected.userId === BC ? [] : quickReplies}
               nameOf={selected.isGroup ? id => selected.members?.find(m => m.userId === id)?.name ?? friends.find(f => f.userId === id)?.name ?? 'Former member' : undefined}
               onGroupInfo={selected.isGroup ? () => setGroupInfoOpen(true) : undefined}
               onLoadOlder={selected.userId === BC ? undefined : async before => {
@@ -792,8 +861,9 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
             isMe={profileFor === user.userId}
             onBack={() => setProfileFor(null)}
             onFriendsChanged={() => void loadData()}
-            onMessage={() => {
+            onMessage={draft => {
               setSelectedId(profileFor);
+              if (draft) setDraft({ chatId: profileFor, text: draft, at: Date.now() });
               setTab('chats');
               setProfileFor(null);
             }}
@@ -906,6 +976,15 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
             {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4 text-cyan-400" />}
             <span>{copied ? 'Copied' : 'Copy User ID'}</span>
           </button>
+          {/* Shop QR code: customers scan it to open this profile in KiteChat */}
+          <div className="mt-5 flex flex-col items-center">
+            <img src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(qrSvg(profileLink(user.userId)))}`} alt="Your QR code" className="w-48 h-48 rounded-xl" />
+            <p className="mt-2 text-[11px] text-slate-400 text-center">Customers scan this to open your profile in KiteChat.</p>
+            <button onClick={() => downloadQr(user.userId, user.name)} className="mt-3 w-full py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-medium text-sm flex items-center justify-center gap-2 border border-slate-700">
+              <Download className="w-4 h-4 text-cyan-400" />
+              <span>Download QR</span>
+            </button>
+          </div>
         </Modal>
       )}
     </div>
@@ -915,7 +994,7 @@ function Messenger({ user, onLogout, onUserChange }: { user: User; onLogout: () 
 function Modal({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
-      <div className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative" onClick={e => e.stopPropagation()}>
+      <div className="w-full max-w-sm max-h-[92dvh] overflow-y-auto bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl relative" onClick={e => e.stopPropagation()}>
         <button onClick={onClose} className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 flex items-center justify-center text-slate-400 hover:text-white" aria-label="Close">
           <X className="w-4 h-4" />
         </button>

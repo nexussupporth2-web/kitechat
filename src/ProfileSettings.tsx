@@ -201,6 +201,60 @@ export default function ProfileSettings({ userId, onChanged, isAdmin, onIdChange
   );
 }
 
+/** Quick replies: up to 10 short ready answers, picked with the lightning button in a chat. Saved on their own. */
+function QuickReplies() {
+  const [list, setList] = useState<string[] | null>(null);
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    api<{ replies: string[] }>('/api/account/quick-replies')
+      .then(r => setList(r.replies))
+      .catch(() => setList([]));
+  }, []);
+  if (!list) return null;
+  const save = async () => {
+    setBusy(true);
+    setNote('');
+    try {
+      const r = await api<{ replies: string[] }>('/api/account/quick-replies', { replies: list });
+      setList(r.replies);
+      // The open chats pick up the new list straight away.
+      window.dispatchEvent(new CustomEvent('kite-quick-replies', { detail: r.replies }));
+      setNote('Quick replies saved.');
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : 'Could not save. Please try again.');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div>
+      <span className="text-xs text-slate-400 mb-1.5 block">Quick replies ({list.length}/10)</span>
+      <div className="space-y-2">
+        {list.map((q, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <input value={q} onChange={e => setList(list.map((x, j) => (j === i ? e.target.value.slice(0, 300) : x)))} className={inputCls} placeholder="e.g. Shop timings: 10am-9pm" />
+            <button type="button" onClick={() => setList(list.filter((_, j) => j !== i))} className="w-9 h-9 shrink-0 rounded-full hover:bg-slate-800 text-rose-400 flex items-center justify-center" aria-label="Remove quick reply">
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 flex items-center gap-4">
+        {list.length < 10 && (
+          <button type="button" onClick={() => setList([...list, ''])} className="text-sm text-cyan-400 font-medium">
+            + Add quick reply
+          </button>
+        )}
+        <button type="button" onClick={() => void save()} disabled={busy} className="text-sm text-cyan-400 font-semibold disabled:opacity-50">
+          {busy ? 'Saving…' : 'Save quick replies'}
+        </button>
+      </div>
+      {note && <p role="status" className="mt-1 text-xs text-emerald-400">{note}</p>}
+    </div>
+  );
+}
+
 /** A small box over the screen, like "Add friend". */
 function SmallBox({ title, onClose, children }: { title: string; onClose?: () => void; children: React.ReactNode }) {
   return (
@@ -785,6 +839,8 @@ function Editor({ me, biz, onClose, onSaved, onPhotoChanged }: { me: Me; biz: Bu
               <button type="button" onClick={() => setAddingProduct(true)} className="mt-2 text-sm text-cyan-400 font-medium">+ Add product</button>
             )}
           </div>
+
+          <QuickReplies />
 
           {error && <p role="alert" className="text-xs text-rose-400">{error}</p>}
         </div>

@@ -45,7 +45,14 @@ const Row = ({ icon, children }: { icon: React.ReactNode; children: React.ReactN
 const link = 'text-cyan-400 underline underline-offset-2';
 
 /** Read-only business profile: cover, details, hours, links and the product catalogue. */
-export default function BusinessInfo({ b, hideCover, hideSocials }: { b: Business; hideCover?: boolean; hideSocials?: boolean }) {
+/** The "Enquire" button under each product (only on someone else's shop). */
+export interface EnquireAction {
+  label: string;
+  disabled?: boolean;
+  onClick: (p: { name: string; price: string }) => void;
+}
+
+export default function BusinessInfo({ b, hideCover, hideSocials, enquire }: { b: Business; hideCover?: boolean; hideSocials?: boolean; enquire?: EnquireAction }) {
   const has = b.businessName || b.description || b.address || b.mapLink || b.email || b.website || b.phone || b.about || b.coverUrl || b.products.length || Object.keys(b.socials).length;
   if (!has) return null;
   const today = (new Date().getDay() + 6) % 7;
@@ -123,6 +130,15 @@ export default function BusinessInfo({ b, hideCover, hideSocials }: { b: Busines
                     <div className="text-sm font-semibold text-white break-words">{p.name}</div>
                     {p.price && <div className="text-sm text-cyan-400">{p.price}</div>}
                     {p.description && <div className="mt-1 text-xs text-slate-400 break-words">{p.description}</div>}
+                    {enquire && (
+                      <button
+                        onClick={() => enquire.onClick({ name: p.name, price: p.price })}
+                        disabled={enquire.disabled}
+                        className="mt-2 w-full py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-700 disabled:text-slate-300 text-accent-ink text-xs font-semibold"
+                      >
+                        {enquire.label}
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
