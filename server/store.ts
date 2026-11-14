@@ -69,6 +69,26 @@ export interface User {
   reqOut?: string[];
   /** How this person likes their messages to look to friends (they can switch sharing off). */
   style?: { color?: string; font?: string; accent?: string; share: boolean };
+  /** Sign-ins made before this time stop working (set when the password changes). */
+  sessionsFrom?: number;
+  /** When the User ID was last changed (it can change once every 30 days). */
+  idChangedAt?: number;
+  /** Earlier User IDs, kept for 30 days so nobody else can take them. */
+  formerIds?: { id: string; until: number }[];
+  /** Signed in with a temporary password from the admin: must choose a new one. */
+  mustChangePassword?: boolean;
+  /** Asked the admin to reset the password. */
+  resetRequest?: { at: number; message: string };
+  /** For each group: when this person last read it (to count unread messages). */
+  groupRead?: Record<string, number>;
+  /** When this person was last connected. */
+  lastSeen?: number;
+  /** False = friends do not see "last seen". */
+  showLastSeen?: boolean;
+  /** People this user blocked: they cannot message, call or send files to this user. */
+  blockList?: string[];
+  /** Reports other people made about this account (shown to the admin). */
+  reportedBy?: { by: string; reason: string; at: number }[];
   /** Devices that allowed notifications (so a closed app can still be told about a message or call). */
   pushSubs?: { endpoint: string; keys: { p256dh: string; auth: string } }[];
 }
@@ -111,6 +131,20 @@ export interface Message {
   deleted?: boolean;
   /** People who deleted it just for themselves. */
   hiddenFor?: string[];
+  /** A photo or voice note shown inside the chat (kept 30 days, then deleted). */
+  media?: { kind: 'photo' | 'voice'; key: string; mime: string; size: number; dur?: number; expiresAt: number; gone?: boolean };
+}
+
+/** A group chat (up to 20 people). Its messages use the group's id as recipientId. */
+export interface Group {
+  id: string;
+  name: string;
+  /** The person who made it: only they add or remove people and rename it. */
+  ownerId: string;
+  members: string[];
+  /** When each member joined: they only see messages from then on. */
+  joined: Record<string, number>;
+  createdAt: number;
 }
 
 export interface Post {
@@ -129,6 +163,8 @@ export interface Post {
   /** userId -> emoji */
   likes?: Record<string, string>;
   comments?: NetComment[];
+  /** Friends this post was shared with (they see it under Received, and can like and comment). */
+  sharedWith?: { userId: string; by: string; at: number }[];
 }
 
 export interface NetComment {
