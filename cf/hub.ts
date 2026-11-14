@@ -3,9 +3,9 @@
 // Calls, files, profiles and Kite Network come in later phases.
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { DurableObject } from 'cloudflare:workers';
-import { data, messageIndex, initStore, save, addMessage as storeAdd, messagesFor as storeMessagesFor, type User, type Message } from './store.ts';
+import { data, messageIndex, initStore, save, addMessage as storeAdd, messagesFor as storeMessagesFor, olderMessages, searchMessages, isGroupId, type User, type Message, type Group } from './store.ts';
 import { ENV, BUCKET, setEnv } from './runtime.ts';
-import { initR2, r2Enabled, signGet, signPut, head } from './r2.ts';
+import { initR2, r2Enabled, signGet, signPut, head, remove } from './r2.ts';
 import { initModeration, blockedMessage, moderationEnabled } from './moderation.ts';
 import { makeVapid, sendWebPush, type Vapid } from './push.ts';
 import { mediaRouter } from './media.ts';
@@ -22,6 +22,8 @@ const err = (message: string, status: number, extra: object = {}) => json({ erro
 const uuid = () => crypto.randomUUID();
 
 const BLOCKED_MSG = blockedMessage;
+/** Adult-content blocks keep their message; a block by the admin after reports gets a plain one. */
+const blockedMsgFor = (u: User) => ((u.strikes?.length ?? 0) >= 2 ? BLOCKED_MSG : 'Your account has been blocked by the admin. You can send an appeal.');
 const TOKEN_TTL = 30 * 24 * 3600 * 1000;
 
 async function pbkdf2(password: string, salt: Uint8Array): Promise<string> {
@@ -49,15 +51,20 @@ async function signToken(secret: string, uid: string) {
   const payload = b64(enc.encode(JSON.stringify({ uid, exp: Date.now() + TOKEN_TTL })));
   return `${payload}.${await hmac(secret, payload)}`;
 }
-async function verifyToken(secret: string, token: unknown): Promise<string | null> {
-  if (typeof token !== 'string') return null;
+/** The person a sign-in token belongs to, or null. Tokens made before a password change no longer work. */
+async function tokenUser(secret: string, token: unknown): Promise<User | undefined> {
+  if (typeof token !== 'string') return undefined;
   const [payload, sig] = token.split('.');
-  if (!payload || !sig || (await hmac(secret, payload)) !== sig) return null;
+  if (!payload || !sig || (await hmac(secret, payload)) !== sig) return undefined;
   try {
     const { uid, exp } = JSON.parse(new TextDecoder().decode(unb64(payload)));
-    return typeof uid === 'string' && typeof exp === 'number' && exp > Date.now() ? uid : null;
+    if (typeof uid !== 'string' || typeof exp !== 'number' || exp <= Date.now()) return undefined;
+    const user = data.users[uid];
+    if (!user) return undefined;
+    if (user.sessionsFrom && exp - TOKEN_TTL < user.sessionsFrom) return undefined;
+    return user;
   } catch {
-    return null;
+    return undefined;
   }
 }
 
@@ -115,14 +122,14 @@ export class Hub extends DurableObject {
       };
       const requireAuth = async (req: any, res: any, next: any) => {
         const h: string = req.headers.authorization || '';
-        const uid = await verifyToken(this.secret, h.startsWith('Bearer ') ? h.slice(7) : '');
-        const user = uid ? this.users[uid] : undefined;
+        const user = await tokenUser(this.secret, h.startsWith('Bearer ') ? h.slice(7) : '');
         if (!user) return res.status(401).json({ error: 'Unauthorized' });
-        if (user.blocked) return res.status(403).json({ error: BLOCKED_MSG, blocked: true });
+        if (user.blocked) return res.status(403).json({ error: blockedMsgFor(user), blocked: true });
         res.locals.user = user;
         next();
       };
-      const areFriends = (a: string, b: string) => this.areFriends(a, b);
+      // Files, profiles and friends-only posts also stop between two people when one has blocked the other.
+      const areFriends = (a: string, b: string) => this.canTalk(a, b);
       const net = networkRouter({ io, requireAuth, areFriends, isAdmin: (u: User) => u.userId === this.adminId });
       const media = mediaRouter({
         io,
@@ -131,11 +138,25 @@ export class Hub extends DurableObject {
         isOnline: (id: string) => this.isOnline(id),
         notifyOffline: (recipientId: string, senderId: string) => {
           if (!this.isOnline(recipientId)) this.pushTo(recipientId, { kind: 'message', title: this.users[senderId]?.name ?? 'KiteChat', body: 'Sent you a file', tag: 'msg-' + senderId });
-        }
+        },
+        canChat: (a: string, to: string) => this.canChat(a, to)
       });
-      const friends = friendsRouter({ io, requireAuth, friendView: (u: User) => this.friendView(u), photoUrl: (u: User) => this.photoUrlOf(u) });
+      const friends = friendsRouter({
+        io,
+        requireAuth,
+        friendView: (u: User) => this.friendView(u),
+        photoUrl: (u: User) => this.photoUrlOf(u),
+        blocked: (a: string, b: string) => this.blocked(a, b)
+      });
       this.routers = [net, friends, media];
       if (media.sweep) this.sweepers.push(media.sweep);
+      // Photos and voice notes in chats are deleted after 30 days.
+      this.sweepers.push(async () => {
+        const now = Date.now();
+        for (const m of this.messages) {
+          if (m.media && !m.media.gone && m.media.expiresAt <= now) await this.dropMedia(m);
+        }
+      });
       if (!(await ctx.storage.getAlarm())) await ctx.storage.setAlarm(Date.now() + 10 * 60_000);
     });
   }
@@ -185,8 +206,8 @@ export class Hub extends DurableObject {
   saveMsg(_m: Message) {
     save();
   }
-  messagesFor(userId: string, limit = 1000): Message[] {
-    return storeMessagesFor(userId, limit);
+  messagesFor(userId: string): Message[] {
+    return storeMessagesFor(userId);
   }
   publicUser(u: User) {
     return { userId: u.userId, name: u.name, avatar: u.avatar, isAdmin: u.userId === this.adminId };
@@ -205,6 +226,161 @@ export class Hub extends DurableObject {
   }
   areFriends(a: string, b: string) {
     return !!this.users[a]?.friends.includes(b);
+  }
+  // ---------- groups ----------
+  groupOf(id: string): Group | undefined {
+    return data.groups.find(g => g.id === id);
+  }
+  /** Since when `uid` may see this group's messages, or undefined when they are not in it. */
+  memberSince(groupId: string, uid: string): number | undefined {
+    const g = this.groupOf(groupId);
+    if (!g || !g.members.includes(uid)) return undefined;
+    return g.joined[uid] ?? 0;
+  }
+  /** May `uid` see this message? */
+  canSee(m: Message, uid: string) {
+    if (isGroupId(m.recipientId)) {
+      const since = this.memberSince(m.recipientId, uid);
+      return since !== undefined && m.timestamp >= since;
+    }
+    return m.senderId === uid || m.recipientId === uid;
+  }
+  /** Everyone who sees this message. */
+  audience(m: Message): string[] {
+    if (isGroupId(m.recipientId)) return this.groupOf(m.recipientId)?.members ?? [];
+    return [m.senderId, m.recipientId];
+  }
+  /** May `uid` send to `to` now (a friend, neither blocked, or a group they are in)? */
+  canChat(uid: string, to: string) {
+    if (isGroupId(to)) return this.memberSince(to, uid) !== undefined;
+    return this.canTalk(uid, to);
+  }
+  async groupView(g: Group, viewer: User) {
+    return {
+      userId: g.id,
+      name: g.name,
+      avatar: '👥',
+      photoUrl: null,
+      isOnline: false,
+      isGroup: true,
+      ownerId: g.ownerId,
+      lastRead: viewer.groupRead?.[g.id] ?? 0,
+      members: await Promise.all(
+        g.members.map(async id => {
+          const u = this.users[id];
+          return { userId: id, name: u?.name ?? id, avatar: u?.avatar ?? '🙂', photoUrl: u ? await this.photoUrlOf(u) : null };
+        })
+      )
+    };
+  }
+  /** Send a new message to everyone in its chat, with a closed-app notification for those away. */
+  deliver(msg: Message, sender: User) {
+    if (isGroupId(msg.recipientId)) {
+      const g = this.groupOf(msg.recipientId);
+      if (!g) return;
+      this.emitTo(g.members, 'chat-message', msg);
+      for (const id of g.members) {
+        if (id !== sender.userId && !this.isOnline(id)) this.pushTo(id, { kind: 'message', title: g.name, body: `${sender.name}: new message`, tag: 'msg-' + g.id });
+      }
+      return;
+    }
+    this.emitTo([msg.recipientId, sender.userId], 'chat-message', msg);
+    if (!this.isOnline(msg.recipientId)) this.pushTo(msg.recipientId, { kind: 'message', title: sender.name, body: 'New message', tag: 'msg-' + sender.userId });
+  }
+  /** Delete a chat photo / voice note file and mark it gone. */
+  async dropMedia(m: Message) {
+    if (!m.media || m.media.gone) return;
+    m.media.gone = true;
+    this.saveMsg(m);
+    if (r2Enabled) await remove(m.media.key).catch(() => {});
+    this.emitTo(this.audience(m), 'message-updated', m);
+  }
+  /** Remove a whole group (when the last person leaves), with its messages and files. */
+  async deleteGroup(g: Group) {
+    data.groups = data.groups.filter(x => x.id !== g.id);
+    const mine = this.messages.filter(m => m.recipientId === g.id);
+    for (const m of mine) if (m.media && !m.media.gone && r2Enabled) await remove(m.media.key).catch(() => {});
+    data.messages = this.messages.filter(m => m.recipientId !== g.id);
+    for (const m of mine) this.index.delete(m.id);
+    save();
+  }
+
+  /** An ID someone used until recently stays theirs for 30 days. */
+  idReserved(id: string, exceptUserId?: string) {
+    const now = Date.now();
+    return Object.values(this.users).some(u => u.userId !== exceptUserId && u.formerIds?.some(f => f.id === id && f.until > now));
+  }
+
+  /** Move a person to a new User ID: their friends, chats, posts, likes, comments and files all follow. */
+  renameUser(oldId: string, newId: string) {
+    const swap = (x: string) => (x === oldId ? newId : x);
+    const swapList = (l?: string[]) => (l ? l.map(swap) : l);
+    const swapKeys = <T,>(o?: Record<string, T>) => {
+      if (!o || !(oldId in o)) return o;
+      const out: Record<string, T> = {};
+      for (const [k, v] of Object.entries(o)) out[swap(k)] = v;
+      return out;
+    };
+    const me = this.users[oldId];
+    delete this.users[oldId];
+    me.userId = newId;
+    this.users[newId] = me;
+    for (const u of Object.values(this.users)) {
+      u.friends = swapList(u.friends) ?? [];
+      u.hidden = swapList(u.hidden);
+      u.pinnedChats = swapList(u.pinnedChats);
+      u.reqIn = swapList(u.reqIn);
+      u.reqOut = swapList(u.reqOut);
+      u.blockList = swapList(u.blockList);
+      if (u.reportedBy) u.reportedBy = u.reportedBy.map(r => ({ ...r, by: swap(r.by) }));
+    }
+    for (const m of data.messages) {
+      m.senderId = swap(m.senderId);
+      m.recipientId = swap(m.recipientId);
+      m.reactions = swapKeys(m.reactions) ?? {};
+      if (m.replyTo) m.replyTo.senderId = swap(m.replyTo.senderId);
+      m.hiddenFor = swapList(m.hiddenFor);
+    }
+    for (const p of data.posts) {
+      p.ownerId = swap(p.ownerId);
+      p.likes = swapKeys(p.likes);
+      if (p.comments) for (const c of p.comments) c.userId = swap(c.userId);
+      if (p.sharedWith) p.sharedWith = p.sharedWith.map(x => ({ ...x, userId: swap(x.userId), by: swap(x.by) }));
+    }
+    for (const sh of data.shares) {
+      sh.senderId = swap(sh.senderId);
+      sh.recipientId = swap(sh.recipientId);
+    }
+    for (const r of data.reports) r.reporterId = swap(r.reporterId);
+    for (const g of data.groups) {
+      g.ownerId = swap(g.ownerId);
+      g.members = g.members.map(swap);
+      g.joined = swapKeys(g.joined) ?? {};
+    }
+    for (const c of this.calls.values()) {
+      c.callerId = swap(c.callerId);
+      c.calleeId = swap(c.calleeId);
+    }
+    save();
+  }
+
+  /** "Last seen" time of `u` as `viewerId` may see it (hidden if switched off or if `u` blocked the viewer). */
+  lastSeenFor(u: User, viewerId: string): number | null {
+    if (u.showLastSeen === false || this.blocked(u.userId, viewerId)) return null;
+    return u.lastSeen ?? null;
+  }
+
+  /** Did `a` block `b`? */
+  blocked(a: string, b: string) {
+    return !!this.users[a]?.blockList?.includes(b);
+  }
+  /** Friends, and neither one has blocked the other. */
+  canTalk(a: string, b: string) {
+    return this.areFriends(a, b) && !this.blocked(a, b) && !this.blocked(b, a);
+  }
+  /** Friends who may see this person's online dot (not the people they blocked). */
+  presenceTargets(u: User) {
+    return u.friends.filter(f => !this.blocked(u.userId, f));
   }
   /** Send an event to every open connection of these people. */
   emitTo(ids: string[], event: string, data: unknown) {
@@ -355,10 +531,9 @@ export class Hub extends DurableObject {
 
   async auth(req: Request): Promise<User | Response> {
     const h = req.headers.get('authorization') || '';
-    const uid = await verifyToken(this.secret, h.startsWith('Bearer ') ? h.slice(7) : '');
-    const user = uid ? this.users[uid] : undefined;
+    const user = await tokenUser(this.secret, h.startsWith('Bearer ') ? h.slice(7) : '');
     if (!user) return err('Unauthorized', 401);
-    if (user.blocked) return err(BLOCKED_MSG, 403, { blocked: true });
+    if (user.blocked) return err(blockedMsgFor(user), 403, { blocked: true });
     return user;
   }
 
@@ -375,6 +550,10 @@ export class Hub extends DurableObject {
 
     // --- a quick health check of file storage (shows only yes/no answers, never secrets) ---
     if (req.method === 'GET' && path === '/api/diag') {
+      // Only the signed-in admin may see this.
+      const who = await this.auth(req);
+      if (who instanceof Response) return who;
+      if (who.userId !== this.adminId) return err('Admin only', 403);
       const out: Record<string, unknown> = {
         r2Enabled,
         hasBucket: !!BUCKET,
@@ -424,7 +603,7 @@ export class Hub extends DurableObject {
       if (!/^[A-Z0-9_]{3,20}$/.test(id)) return err('User ID must be 3-20 letters, numbers or underscores', 400);
       if (password.length < 6 || password.length > 128) return err('Password must be 6-128 characters', 400);
       if (cleanName.length < 1 || cleanName.length > 40) return err('Name must be 1-40 characters', 400);
-      if (this.users[id]) return err('User ID already exists', 409);
+      if (this.users[id] || this.idReserved(id)) return err('User ID already exists', 409);
       const user: User = {
         userId: id,
         name: cleanName,
@@ -447,8 +626,25 @@ export class Hub extends DurableObject {
       if (typeof userId !== 'string' || typeof password !== 'string') return err('Missing credentials', 400);
       const user = this.users[userId.trim().toUpperCase()];
       if (!user || !(await verifyPassword(password, user.passwordHash))) return err('Invalid User ID or password', 401);
-      if (user.blocked) return err(BLOCKED_MSG, 403, { blocked: true });
-      return json({ token: await signToken(this.secret, user.userId), user: { ...this.publicUser(user), photoUrl: await this.photoUrlOf(user) } });
+      if (user.blocked) return err(blockedMsgFor(user), 403, { blocked: true });
+      return json({
+        token: await signToken(this.secret, user.userId),
+        user: { ...this.publicUser(user), photoUrl: await this.photoUrlOf(user), showLastSeen: user.showLastSeen !== false, mustChangePassword: !!user.mustChangePassword }
+      });
+    }
+
+    // Forgot password: anyone can ask; the admin sees the request and sets a temporary password.
+    if (req.method === 'POST' && path === '/api/password-reset-request') {
+      if (!this.rateLimit(req, path, 5, 60_000)) return err('Too many attempts, try again in a minute', 429);
+      const id = typeof body.userId === 'string' ? body.userId.trim().toUpperCase() : '';
+      const u = this.users[id];
+      const message = typeof body.message === 'string' ? body.message.trim().slice(0, 200) : '';
+      // The answer is the same whether or not the ID exists, so nobody can test which IDs are real.
+      if (u && u.userId !== this.adminId) {
+        u.resetRequest = { at: Date.now(), message };
+        this.saveUser(u);
+      }
+      return json({ ok: true });
     }
 
     if (req.method === 'POST' && path === '/api/appeal') {
@@ -470,7 +666,15 @@ export class Hub extends DurableObject {
     if (a instanceof Response) return a;
     const me = a;
 
-    if (req.method === 'GET' && path === '/api/me') return json({ user: { ...this.publicUser(me), photoUrl: await this.photoUrlOf(me) } });
+    if (req.method === 'GET' && path === '/api/me') {
+      return json({ user: { ...this.publicUser(me), photoUrl: await this.photoUrlOf(me), showLastSeen: me.showLastSeen !== false, mustChangePassword: !!me.mustChangePassword } });
+    }
+
+    if (req.method === 'POST' && path === '/api/account/last-seen') {
+      me.showLastSeen = body.show !== false;
+      this.saveUser(me);
+      return json({ ok: true });
+    }
 
     if (req.method === 'GET' && path === '/api/friends') {
       const list = me.friends.map(id => this.users[id]).filter(Boolean);
@@ -479,27 +683,334 @@ export class Hub extends DurableObject {
           list.map(async u =>
             u.userId === this.adminId && me.userId !== this.adminId
               ? { ...this.friendView(u), name: 'System Broadcast', avatar: '📢', photoUrl: null }
-              : { ...this.friendView(u), photoUrl: await this.photoUrlOf(u), pinOrder: (me.pinnedChats ?? []).indexOf(u.userId) }
+              : {
+                  ...this.friendView(u),
+                  // Someone who blocked me always looks offline to me.
+                  isOnline: this.blocked(u.userId, me.userId) ? false : this.isOnline(u.userId),
+                  lastSeen: this.lastSeenFor(u, me.userId),
+                  photoUrl: await this.photoUrlOf(u),
+                  pinOrder: (me.pinnedChats ?? []).indexOf(u.userId),
+                  blockedByMe: this.blocked(me.userId, u.userId)
+                }
           )
         )
       });
     }
 
-    if (req.method === 'POST' && path === '/api/friends') {
-      const friendId = typeof body.friendId === 'string' ? body.friendId.trim().toUpperCase() : '';
-      const target = this.users[friendId];
-      if (!target) return err('No user with that ID', 404);
-      if (target.userId === me.userId) return err('You cannot add yourself', 400);
-      if (me.friends.includes(target.userId)) return err('Already in your friends list', 400);
-      me.friends.push(target.userId);
-      if (!target.friends.includes(me.userId)) target.friends.push(me.userId);
+    // ----- groups (up to 20 people; the person who made it manages it) -----
+    const MAX_GROUP = 20;
+    const cleanGroupName = (v: unknown) => (typeof v === 'string' ? v.trim().slice(0, 40) : '');
+    if (req.method === 'GET' && path === '/api/groups') {
+      const mine = data.groups.filter(g => g.members.includes(me.userId));
+      return json({ groups: await Promise.all(mine.map(g => this.groupView(g, me))) });
+    }
+    if (req.method === 'POST' && path === '/api/groups') {
+      if (!this.rateLimit(req, path, 10, 60_000)) return err('Too many attempts, try again in a minute', 429);
+      const name = cleanGroupName(body.name);
+      if (!name) return err('Give the group a name', 400);
+      const picked = Array.isArray(body.members) ? [...new Set(body.members.filter((x: unknown) => typeof x === 'string'))] as string[] : [];
+      const others = picked.filter(id => id !== me.userId && this.canTalk(me.userId, id));
+      if (others.length === 0) return err('Pick at least one friend', 400);
+      if (others.length + 1 > MAX_GROUP) return err(`A group can have up to ${MAX_GROUP} people`, 400);
+      const now = Date.now();
+      const members = [me.userId, ...others];
+      const g: Group = {
+        id: 'grp_' + uuid().replace(/-/g, '').slice(0, 12),
+        name,
+        ownerId: me.userId,
+        members,
+        joined: Object.fromEntries(members.map(id => [id, now])),
+        createdAt: now
+      };
+      data.groups.push(g);
+      save();
+      this.emitTo(members, 'group-updated', { groupId: g.id });
+      return json({ group: await this.groupView(g, me) });
+    }
+    const gm = path.match(/^\/api\/groups\/(grp_[a-z0-9]+)\/(rename|add|remove|leave)$/);
+    if (req.method === 'POST' && gm) {
+      const g = this.groupOf(gm[1]);
+      if (!g || !g.members.includes(me.userId)) return err('Group not found', 404);
+      const action = gm[2];
+      const before = [...g.members];
+      if (action === 'leave') {
+        g.members = g.members.filter(id => id !== me.userId);
+        delete g.joined[me.userId];
+        if (g.members.length === 0) {
+          await this.deleteGroup(g);
+          return json({ ok: true });
+        }
+        // The person who joined earliest takes over.
+        if (g.ownerId === me.userId) g.ownerId = [...g.members].sort((a, b) => (g.joined[a] ?? 0) - (g.joined[b] ?? 0))[0];
+      } else {
+        if (g.ownerId !== me.userId) return err('Only the person who made the group can do this', 403);
+        if (action === 'rename') {
+          const name = cleanGroupName(body.name);
+          if (!name) return err('Give the group a name', 400);
+          g.name = name;
+        } else if (action === 'add') {
+          const ids = Array.isArray(body.userIds) ? (body.userIds.filter((x: unknown) => typeof x === 'string') as string[]) : [];
+          const add = [...new Set(ids)].filter(id => !g.members.includes(id) && this.canTalk(me.userId, id));
+          if (add.length === 0) return err('Pick at least one friend', 400);
+          if (g.members.length + add.length > MAX_GROUP) return err(`A group can have up to ${MAX_GROUP} people`, 400);
+          const now = Date.now();
+          for (const id of add) {
+            g.members.push(id);
+            g.joined[id] = now;
+          }
+        } else if (action === 'remove') {
+          const id = typeof body.userId === 'string' ? body.userId : '';
+          if (!g.members.includes(id) || id === me.userId) return err('Invalid request', 400);
+          g.members = g.members.filter(x => x !== id);
+          delete g.joined[id];
+        }
+      }
+      save();
+      this.emitTo([...new Set([...before, ...g.members])], 'group-updated', { groupId: g.id });
+      return json({ ok: true });
+    }
+
+    // ----- photos and voice notes inside chats -----
+    if (req.method === 'POST' && path === '/api/chatmedia') {
+      if (!r2Enabled) return err('File storage is not set up on this server yet', 503);
+      const { key, recipientId, kind } = body;
+      if (typeof key !== 'string' || typeof recipientId !== 'string' || (kind !== 'photo' && kind !== 'voice')) return err('Invalid request', 400);
+      if (!key.startsWith(`chat/${me.userId}/`) || !this.canChat(me.userId, recipientId)) return err('Invalid request', 400);
+      if (this.messages.some(m => m.media?.key === key)) return err('Already sent', 409);
+      const info = await head(key).catch(() => null);
+      if (!info) return err('Upload not found. Please try again.', 400);
+      const okType = kind === 'photo' ? info.type.startsWith('image/') : info.type.startsWith('audio/');
+      const max = kind === 'photo' ? 1024 * 1024 : 5 * 1024 * 1024;
+      if (!okType || info.size > max) {
+        await remove(key).catch(() => {});
+        return err('That file cannot be sent', 400);
+      }
+      const dur = Number(body.dur);
+      const now = Date.now();
+      const msg: Message = {
+        id: uuid(),
+        senderId: me.userId,
+        recipientId,
+        message: kind === 'photo' ? '📷 Photo' : '🎤 Voice note',
+        timestamp: now,
+        status: !isGroupId(recipientId) && this.isOnline(recipientId) ? 'received' : 'sent',
+        reactions: {},
+        media: {
+          kind,
+          key,
+          mime: info.type,
+          size: info.size,
+          ...(kind === 'voice' && Number.isFinite(dur) && dur > 0 ? { dur: Math.min(Math.round(dur), 600) } : {}),
+          expiresAt: now + 30 * 24 * 3600 * 1000
+        }
+      };
+      this.addMessage(msg);
+      this.deliver(msg, me);
+      return json({ message: msg });
+    }
+    const cm = path.match(/^\/api\/chatmedia\/([^/]+)$/);
+    if (req.method === 'GET' && cm) {
+      const m = this.index.get(decodeURIComponent(cm[1]));
+      if (!m?.media || !this.canSee(m, me.userId)) return err('Not found', 404);
+      if (m.media.gone || !r2Enabled) return err('This has expired', 410);
+      return json({ url: await signGet(m.media.key, { expiresIn: 3600 }) });
+    }
+
+    // ----- change password / change User ID -----
+    if (req.method === 'POST' && path === '/api/account/password') {
+      if (!this.rateLimit(req, path, 10, 60_000)) return err('Too many attempts, try again in a minute', 429);
+      const current = typeof body.current === 'string' ? body.current : '';
+      const next = typeof body.next === 'string' ? body.next : '';
+      if (!(await verifyPassword(current, me.passwordHash))) return err('Your current password is not right', 400);
+      if (next.length < 6 || next.length > 128) return err('New password must be 6-128 characters', 400);
+      if (next === current) return err('The new password is the same as the old one', 400);
+      me.passwordHash = await hashPassword(next);
+      delete me.mustChangePassword;
+      // Every other phone or computer signed in to this account is signed out.
+      me.sessionsFrom = Date.now();
       this.saveUser(me);
-      this.saveUser(target);
-      this.emitTo([target.userId], 'friend-added', this.friendView(me));
-      return json({ friend: { ...this.friendView(target), photoUrl: await this.photoUrlOf(target) } });
+      // Open connections are dropped shortly: this phone reconnects with its new sign-in, the others are signed out.
+      const open = this.socketsOf(me.userId);
+      setTimeout(() => {
+        for (const w of open) {
+          try {
+            w.close(4000, 'password changed');
+          } catch {
+            /* closed */
+          }
+        }
+      }, 3000);
+      return json({ token: await signToken(this.secret, me.userId) });
+    }
+
+    if (req.method === 'POST' && path === '/api/account/user-id') {
+      if (!this.rateLimit(req, path, 10, 60_000)) return err('Too many attempts, try again in a minute', 429);
+      if (me.userId === this.adminId) return err('The admin User ID cannot be changed', 400);
+      const password = typeof body.password === 'string' ? body.password : '';
+      const id = typeof body.newId === 'string' ? body.newId.trim().toUpperCase() : '';
+      if (!(await verifyPassword(password, me.passwordHash))) return err('Your password is not right', 400);
+      if (!/^[A-Z0-9_]{3,20}$/.test(id)) return err('User ID must be 3-20 letters, numbers or underscores', 400);
+      if (id === me.userId) return err('That is already your User ID', 400);
+      const DAY = 24 * 3600 * 1000;
+      if (me.idChangedAt && Date.now() - me.idChangedAt < 30 * DAY) {
+        const when = new Date(me.idChangedAt + 30 * DAY).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+        return err(`You can change your User ID again on ${when}`, 400);
+      }
+      if (this.users[id] || this.idReserved(id, me.userId)) return err('That User ID is taken. Try another.', 409);
+      const oldId = me.userId;
+      const oldSockets = this.socketsOf(oldId);
+      this.renameUser(oldId, id);
+      const now = Date.now();
+      me.formerIds = [...(me.formerIds ?? []).filter(f => f.until > now && f.id !== id), { id: oldId, until: now + 30 * DAY }];
+      me.idChangedAt = now;
+      // Old sign-ins (with the old ID) stop working; this phone gets a new one below.
+      me.sessionsFrom = now;
+      this.saveUser(me);
+      // Friends' apps swap the old ID for the new one.
+      this.emitTo(this.presenceTargets(me), 'friend-id-changed', { oldId, newId: id });
+      // Other phones still connected with the old ID are signed out shortly (this phone reconnects by itself).
+      setTimeout(() => {
+        for (const w of oldSockets) {
+          try {
+            w.close(4000, 'id changed');
+          } catch {
+            /* closed */
+          }
+        }
+      }, 5000);
+      return json({ token: await signToken(this.secret, id), user: { ...this.publicUser(me), photoUrl: await this.photoUrlOf(me) } });
+    }
+
+    // ----- block / unblock a person, report a person -----
+    if (req.method === 'POST' && path === '/api/block') {
+      const id = typeof body.userId === 'string' ? body.userId.trim().toUpperCase() : '';
+      const other = this.users[id];
+      if (!other || id === me.userId || id === this.adminId) return err('Invalid request', 400);
+      const list = (me.blockList ?? []).filter(x => x !== id);
+      if (body.blocked) list.push(id);
+      me.blockList = list.slice(-500);
+      this.saveUser(me);
+      // Their screen stops showing me as online (or shows it again after unblocking).
+      if (other.friends.includes(me.userId)) {
+        this.emitTo([id], 'presence-update', { userId: me.userId, isOnline: body.blocked ? false : this.isOnline(me.userId) });
+      }
+      return json({ ok: true });
+    }
+
+    if (req.method === 'POST' && path === '/api/report-user') {
+      const id = typeof body.userId === 'string' ? body.userId.trim().toUpperCase() : '';
+      const other = this.users[id];
+      if (!other || id === me.userId || id === this.adminId) return err('Invalid request', 400);
+      if (!this.rateLimit(req, path, 10, 60_000)) return err('Too many reports. Wait a moment.', 429);
+      const reason = typeof body.reason === 'string' ? body.reason.trim().slice(0, 300) : '';
+      const list = (other.reportedBy ?? []).filter(r => r.by !== me.userId);
+      list.push({ by: me.userId, reason, at: Date.now() });
+      other.reportedBy = list.slice(-50);
+      this.saveUser(other);
+      return json({ ok: true });
+    }
+
+    if (req.method === 'GET' && path === '/api/admin/reported-users') {
+      if (me.userId !== this.adminId) return err('Admin only', 403);
+      const people = Object.values(this.users)
+        .filter(u => u.reportedBy?.length)
+        .map(u => ({
+          userId: u.userId,
+          name: u.name,
+          blocked: !!u.blocked,
+          reports: (u.reportedBy ?? []).map(r => ({ by: this.users[r.by]?.name ?? r.by, reason: r.reason, at: r.at }))
+        }))
+        .sort((a, b) => b.reports.length - a.reports.length);
+      return json({ people });
+    }
+
+    if (req.method === 'GET' && path === '/api/admin/reset-requests') {
+      if (me.userId !== this.adminId) return err('Admin only', 403);
+      const people = Object.values(this.users)
+        .filter(u => u.resetRequest)
+        .map(u => ({ userId: u.userId, name: u.name, at: u.resetRequest!.at, message: u.resetRequest!.message }))
+        .sort((a, b) => b.at - a.at);
+      return json({ people });
+    }
+
+    if (req.method === 'POST' && path === '/api/admin/reset-requests/action') {
+      if (me.userId !== this.adminId) return err('Admin only', 403);
+      const u = this.users[typeof body.userId === 'string' ? body.userId : ''];
+      if (!u || u.userId === this.adminId) return err('Account not found', 404);
+      if (body.action === 'dismiss') {
+        delete u.resetRequest;
+        this.saveUser(u);
+        return json({ ok: true });
+      }
+      if (body.action !== 'reset') return err('Invalid request', 400);
+      // Easy to read out on the phone: no 0/O or 1/I/L.
+      const letters = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+      const rnd = crypto.getRandomValues(new Uint8Array(8));
+      const temp = Array.from(rnd, b => letters[b % letters.length]).join('');
+      u.passwordHash = await hashPassword(temp);
+      u.mustChangePassword = true;
+      u.sessionsFrom = Date.now();
+      delete u.resetRequest;
+      this.saveUser(u);
+      return json({ tempPassword: temp });
+    }
+
+    if (req.method === 'POST' && path === '/api/admin/reported-users/action') {
+      if (me.userId !== this.adminId) return err('Admin only', 403);
+      const u = this.users[typeof body.userId === 'string' ? body.userId : ''];
+      if (!u || u.userId === this.adminId) return err('Account not found', 404);
+      if (body.action === 'block') {
+        u.blocked = true;
+        delete u.reportedBy;
+        this.saveUser(u);
+        // Close their open connections so they are signed out at once.
+        for (const w of this.socketsOf(u.userId)) {
+          try {
+            w.close(4401, 'blocked');
+          } catch {
+            /* closed */
+          }
+        }
+      } else if (body.action === 'dismiss') {
+        delete u.reportedBy;
+        this.saveUser(u);
+      } else return err('Invalid request', 400);
+      return json({ ok: true });
+    }
+
+    // The old "add instantly" door now only sends a friend request (the other person has to accept).
+    let routePath = path;
+    if (req.method === 'POST' && path === '/api/friends') {
+      body.userId = body.friendId;
+      routePath = '/api/friends/request';
     }
 
     if (req.method === 'GET' && path === '/api/messages') return json({ messages: this.messagesFor(me.userId) });
+    if (req.method === 'GET' && path === '/api/messages/older') {
+      const friendId = url.searchParams.get('friendId') || '';
+      const before = Number(url.searchParams.get('before')) || Date.now();
+      // With "after": everything in between (to fill the gap up to a search result).
+      const after = Number(url.searchParams.get('after'));
+      let since = 0;
+      if (isGroupId(friendId)) {
+        const s = this.memberSince(friendId, me.userId);
+        if (s === undefined) return json({ messages: [] });
+        since = s;
+      }
+      return json({ messages: after ? olderMessages(me.userId, friendId, before, 3000, after, since) : olderMessages(me.userId, friendId, before, 100, -Infinity, since) });
+    }
+    if (req.method === 'GET' && path === '/api/messages/search') {
+      const friendId = url.searchParams.get('friendId') || '';
+      const q = (url.searchParams.get('q') || '').trim().slice(0, 100);
+      if (q.length < 2) return json({ hits: [] });
+      let since = 0;
+      if (isGroupId(friendId)) {
+        const s = this.memberSince(friendId, me.userId);
+        if (s === undefined) return json({ hits: [] });
+        since = s;
+      }
+      return json({ hits: searchMessages(me.userId, friendId, q, 200, since) });
+    }
 
     if (req.method === 'GET' && path === '/api/push/key') return json({ key: this.vapid?.pub ?? null });
     if (req.method === 'POST' && path === '/api/translate') {
@@ -635,22 +1146,24 @@ export class Hub extends DurableObject {
     const pin = path.match(/^\/api\/messages\/([^/]+)\/pin$/);
     if (req.method === 'POST' && pin) {
       const m = this.index.get(decodeURIComponent(pin[1]));
-      if (!m || (m.senderId !== me.userId && m.recipientId !== me.userId)) return err('Not found', 404);
+      if (!m || !this.canSee(m, me.userId)) return err('Not found', 404);
       const want = !!body.pinned;
       if (want && !m.pinned) {
         const same = (x: Message) =>
-          (x.senderId === m.senderId && x.recipientId === m.recipientId) || (x.senderId === m.recipientId && x.recipientId === m.senderId);
+          isGroupId(m.recipientId)
+            ? x.recipientId === m.recipientId
+            : (x.senderId === m.senderId && x.recipientId === m.recipientId) || (x.senderId === m.recipientId && x.recipientId === m.senderId);
         if (this.messages.filter(x => x.pinned && same(x)).length >= 3) return err('You can pin up to 3 messages in a chat. Unpin one first.', 400);
       }
       if (want) m.pinned = true;
       else delete m.pinned;
       this.saveMsg(m);
-      this.emitTo([m.senderId, m.recipientId], 'message-updated', m);
+      this.emitTo(this.audience(m), 'message-updated', m);
       return json({ ok: true });
     }
 
     // Pictures, files, profiles, stories, reels, Kite Network, moderation.
-    const rest = path.replace(/^\/api/, '');
+    const rest = routePath.replace(/^\/api/, '');
     const query: Record<string, string> = {};
     url.searchParams.forEach((v, k) => (query[k] = v));
     const ctx = { headers: req.headers, body, query, ip: req.headers.get('cf-connecting-ip') || '' };
@@ -667,8 +1180,7 @@ export class Hub extends DurableObject {
     if (req.headers.get('upgrade') !== 'websocket') return err('Expected a WebSocket', 426);
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
-    const uid = await verifyToken(this.secret, url.searchParams.get('token'));
-    const user = uid ? this.users[uid] : undefined;
+    const user = await tokenUser(this.secret, url.searchParams.get('token'));
     if (!user || user.blocked) {
       server.accept();
       server.close(4401, 'unauthorized');
@@ -685,12 +1197,12 @@ export class Hub extends DurableObject {
     ws.send(JSON.stringify({ e: '$id', d: cid }));
     // First connection of this person: tell their friends they are online.
     if (this.socketsOf(user.userId).length === 1) {
-      this.emitTo(user.friends, 'presence-update', { userId: user.userId, isOnline: true });
+      this.emitTo(this.presenceTargets(user), 'presence-update', { userId: user.userId, isOnline: true });
     }
     // Anything sent while they were away is now delivered.
     const delivered = new Map<string, string[]>();
     for (const m of this.messages) {
-      if (m.recipientId === user.userId && m.status === 'sent') {
+      if (m.recipientId === user.userId && m.status === 'sent' && !m.hiddenFor?.includes(user.userId)) {
         m.status = 'received';
         this.saveMsg(m);
         delivered.set(m.senderId, [...(delivered.get(m.senderId) ?? []), m.id]);
@@ -718,16 +1230,34 @@ export class Hub extends DurableObject {
         const { recipientId, message } = d;
         if (typeof recipientId !== 'string' || typeof message !== 'string') return;
         const text = message.trim().slice(0, 2000);
+        // ----- a message to a group -----
+        if (isGroupId(recipientId)) {
+          if (!text || this.memberSince(recipientId, me.userId) === undefined) return;
+          const gmsg: Message = { id: uuid(), senderId: me.userId, recipientId, message: text, timestamp: Date.now(), status: 'sent', reactions: {} };
+          if (d.forwarded === true) gmsg.forwarded = true;
+          const o = typeof d.replyTo === 'string' ? this.index.get(d.replyTo) : undefined;
+          if (o && !o.deleted && o.recipientId === recipientId) {
+            gmsg.replyTo = { id: o.id, senderId: o.senderId, text: (o.media ? (o.media.kind === 'photo' ? 'Photo' : 'Voice note') : o.message).slice(0, 120) };
+          }
+          this.addMessage(gmsg);
+          this.deliver(gmsg, me);
+          return;
+        }
         if (!text || !this.areFriends(me.userId, recipientId)) return;
+        // I blocked them: nothing is sent (the app asks me to unblock first).
+        if (this.blocked(me.userId, recipientId)) return;
+        // They blocked me: the message stays on my side only (one dot), like WhatsApp.
+        const heldBack = this.blocked(recipientId, me.userId);
         const msg: Message = {
           id: uuid(),
           senderId: me.userId,
           recipientId,
           message: text,
           timestamp: Date.now(),
-          status: this.isOnline(recipientId) ? 'received' : 'sent',
+          status: !heldBack && this.isOnline(recipientId) ? 'received' : 'sent',
           reactions: {}
         };
+        if (heldBack) msg.hiddenFor = [recipientId];
         if (d.forwarded === true) msg.forwarded = true;
         // An answer to an earlier message in this same chat: keep a short copy of what it answered.
         const orig = typeof d.replyTo === 'string' ? this.index.get(d.replyTo) : undefined;
@@ -735,6 +1265,10 @@ export class Hub extends DurableObject {
           msg.replyTo = { id: orig.id, senderId: orig.senderId, text: (orig.file ? `File: ${orig.file.name}` : orig.message).slice(0, 120) };
         }
         this.addMessage(msg);
+        if (heldBack) {
+          this.emitTo([me.userId], 'chat-message', msg);
+          return;
+        }
         this.emitTo([recipientId, me.userId], 'chat-message', msg);
         if (!this.isOnline(recipientId)) this.pushTo(recipientId, { kind: 'message', title: me.name, body: 'New message', tag: 'msg-' + me.userId });
         return;
@@ -742,9 +1276,16 @@ export class Hub extends DurableObject {
       case 'mark-messages-read': {
         const { friendId } = d;
         if (typeof friendId !== 'string') return;
+        // Groups: just remember when I last read it.
+        if (isGroupId(friendId)) {
+          if (this.memberSince(friendId, me.userId) === undefined) return;
+          me.groupRead = { ...(me.groupRead ?? {}), [friendId]: Date.now() };
+          this.saveUser(me);
+          return;
+        }
         const ids: string[] = [];
         for (const m of this.messages) {
-          if (m.senderId === friendId && m.recipientId === me.userId && m.status !== 'read') {
+          if (m.senderId === friendId && m.recipientId === me.userId && m.status !== 'read' && !m.hiddenFor?.includes(me.userId)) {
             m.status = 'read';
             this.saveMsg(m);
             ids.push(m.id);
@@ -755,7 +1296,7 @@ export class Hub extends DurableObject {
       }
       case 'typing': {
         const { recipientId, isTyping } = d;
-        if (typeof recipientId !== 'string' || !this.areFriends(me.userId, recipientId)) return;
+        if (typeof recipientId !== 'string' || isGroupId(recipientId) || !this.canTalk(me.userId, recipientId)) return;
         this.emitTo([recipientId], 'typing', { senderId: me.userId, isTyping: !!isTyping });
         return;
       }
@@ -764,27 +1305,28 @@ export class Hub extends DurableObject {
         if (typeof messageId !== 'string' || typeof message !== 'string') return;
         const msg = this.index.get(messageId);
         const text = message.trim().slice(0, 2000);
-        if (!msg || !text || msg.senderId !== me.userId || msg.file || msg.broadcast || msg.deleted) return;
+        if (!msg || !text || msg.senderId !== me.userId || msg.file || msg.media || msg.broadcast || msg.deleted) return;
         if (text === msg.message) return;
         msg.message = text;
         msg.edited = true;
         this.saveMsg(msg);
-        this.emitTo([msg.senderId, msg.recipientId], 'message-edited', { messageId, message: text });
+        this.emitTo(this.audience(msg), 'message-edited', { messageId, message: text });
         return;
       }
       case 'delete-message': {
         const { messageId, scope } = d;
         if (typeof messageId !== 'string') return;
         const msg = this.index.get(messageId);
-        if (!msg || (msg.senderId !== me.userId && msg.recipientId !== me.userId)) return;
+        if (!msg || !this.canSee(msg, me.userId)) return;
         if (scope === 'all') {
           if (msg.senderId !== me.userId || msg.broadcast || msg.file) return;
+          if (msg.media) void this.dropMedia(msg);
           msg.deleted = true;
           msg.message = '';
           msg.pinned = false;
           msg.reactions = {};
           this.saveMsg(msg);
-          this.emitTo([msg.senderId, msg.recipientId], 'message-deleted', { messageId, scope: 'all' });
+          this.emitTo(this.audience(msg), 'message-deleted', { messageId, scope: 'all' });
         } else {
           msg.hiddenFor = [...new Set([...(msg.hiddenFor ?? []), me.userId])];
           this.saveMsg(msg);
@@ -796,11 +1338,12 @@ export class Hub extends DurableObject {
         const { messageId, reaction } = d;
         if (typeof messageId !== 'string' || typeof reaction !== 'string') return;
         const msg = this.index.get(messageId);
-        if (!msg || (msg.senderId !== me.userId && msg.recipientId !== me.userId)) return;
+        if (!msg || !this.canSee(msg, me.userId)) return;
+        if (!msg.broadcast && !isGroupId(msg.recipientId) && !this.canTalk(msg.senderId, msg.recipientId)) return;
         if (reaction === '') delete msg.reactions[me.userId];
         else msg.reactions[me.userId] = reaction.slice(0, 8);
         this.saveMsg(msg);
-        this.emitTo([msg.senderId, msg.recipientId], 'message-reaction-update', { messageId, reactions: msg.reactions });
+        this.emitTo(this.audience(msg), 'message-reaction-update', { messageId, reactions: msg.reactions });
         return;
       }
       case 'call-invite': {
@@ -811,6 +1354,8 @@ export class Hub extends DurableObject {
         if (!this.areFriends(me.userId, recipientId)) return reply({ ok: false, error: 'Not a friend' });
         if (recipientId === this.adminId) return reply({ ok: false, error: 'Calls are not available in System Broadcast' });
         const callee = this.users[recipientId];
+        if (this.blocked(me.userId, recipientId)) return reply({ ok: false, error: `Unblock ${callee.name} to call` });
+        if (this.blocked(recipientId, me.userId)) return reply({ ok: false, error: `${callee.name} is not available` });
         const offline = !this.isOnline(recipientId);
         if (offline && !callee.pushSubs?.length) {
           return reply({ ok: false, error: `${callee.name} is offline and has not allowed notifications, so cannot be called now` });
@@ -903,6 +1448,10 @@ export class Hub extends DurableObject {
     const att = ws.deserializeAttachment() as { uid: string } | null;
     const me = att && this.users[att.uid];
     if (!me) return;
-    if (!this.isOnline(me.userId, ws)) this.emitTo(me.friends, 'presence-update', { userId: me.userId, isOnline: false });
+    if (!this.isOnline(me.userId, ws)) {
+      me.lastSeen = Date.now();
+      this.saveUser(me);
+      this.emitTo(this.presenceTargets(me), 'presence-update', { userId: me.userId, isOnline: false, lastSeen: me.showLastSeen === false ? null : me.lastSeen });
+    }
   }
 }

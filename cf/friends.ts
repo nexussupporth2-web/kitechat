@@ -6,10 +6,12 @@ interface Deps {
   requireAuth: RequestHandler;
   friendView: (u: User) => object;
   photoUrl: (u: User) => Promise<string | null>;
+  /** Did `a` block `b`? (optional) */
+  blocked?: (a: string, b: string) => boolean;
 }
 
 /** Friend requests: ask, accept, decline, cancel. Both people become friends only after the other one accepts. */
-export function friendsRouter({ io, requireAuth, friendView, photoUrl }: Deps) {
+export function friendsRouter({ io, requireAuth, friendView, photoUrl, blocked }: Deps) {
   const router = Router();
 
   const hits = new Map<string, number[]>();
@@ -78,6 +80,8 @@ export function friendsRouter({ io, requireAuth, friendView, photoUrl }: Deps) {
     if (target.userId === me.userId) return res.status(400).json({ error: 'You cannot add yourself' });
     if (me.friends.includes(target.userId)) return res.status(400).json({ error: 'Already friends' });
     if (tooFast(me.userId)) return res.status(429).json({ error: 'Too many requests. Try again in a minute.' });
+    // They blocked me: it looks sent, but nothing reaches them.
+    if (blocked?.(target.userId, me.userId)) return res.json({ state: 'sent' });
     // They already asked me: asking back means yes.
     if ((me.reqIn ?? []).includes(target.userId)) {
       const friend = await makeFriends(me, target);

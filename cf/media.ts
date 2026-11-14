@@ -26,7 +26,9 @@ export const LIMITS = {
   maxProducts: 20,
   /** How many of each a user can keep. Adding one more removes the oldest. */
   caps: { story: 1, reel: 5, albumImage: 5, albumVideo: 5 },
-  quotaBytes: 100 * MB
+  quotaBytes: 100 * MB,
+  /** Photos and voice notes inside chats: kept 30 days, then deleted. */
+  chat: { photoBytes: 1 * MB, voiceBytes: 5 * MB, maxVoiceSec: 300, keepMs: 30 * 24 * HOUR }
 };
 
 const IMAGE_TYPES: Record<string, string> = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
@@ -43,6 +45,8 @@ interface Deps {
   isOnline: (id: string) => boolean;
   /** Sends a closed-app notification for a new message/file to someone who is offline. */
   notifyOffline: (recipientId: string, senderId: string) => void;
+  /** May `a` send to `to` (a friend not blocked, or a group they are in)? */
+  canChat?: (a: string, to: string) => boolean;
 }
 
 /** Short reason shown on screen so a problem can be reported without digging through logs. */
@@ -51,7 +55,7 @@ const reason = (e: unknown) => String((e as any)?.name ?? 'Error') + ': ' + Stri
 const cleanName = (n: unknown) =>
   (typeof n === 'string' ? n : 'file').replace(/[\\/\0\r\n"]/g, '_').trim().slice(0, 120) || 'file';
 
-export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffline }: Deps) {
+export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffline, canChat }: Deps) {
   const router = Router();
 
   const needStorage = (_req: Request, res: Response, next: NextFunction) => {
@@ -146,6 +150,16 @@ export function mediaRouter({ io, requireAuth, areFriends, isOnline, notifyOffli
       if (me.userId !== (ENV.ADMIN_ID || 'KITE_ADMIN').trim().toUpperCase()) return res.status(403).json({ error: 'Only the admin can attach files to a broadcast' });
       if (size > LIMITS.share.bytes) return res.status(400).json({ error: `Too large. Attachments can be up to ${LIMITS.share.bytes / MB} MB` });
       key = `broadcast/${crypto.randomUUID()}`;
+    } else if (kind === 'chat') {
+      // A photo or voice note shown inside a chat (friend or group).
+      if (typeof recipientId !== 'string' || !canChat?.(me.userId, recipientId)) {
+        return res.status(400).json({ error: 'You can only send to your friends and groups' });
+      }
+      const ext = IMAGE_TYPES[mime] ?? AUDIO_TYPES[mime];
+      if (!ext) return res.status(400).json({ error: 'Only photos and voice notes can be sent this way' });
+      const max = mime in IMAGE_TYPES ? LIMITS.chat.photoBytes : LIMITS.chat.voiceBytes;
+      if (size > max) return res.status(400).json({ error: `Too large (limit ${max / MB} MB)` });
+      key = `chat/${me.userId}/${crypto.randomUUID()}.${ext}`;
     } else if (kind === 'share') {
       if (typeof recipientId !== 'string' || !areFriends(me.userId, recipientId)) {
         return res.status(400).json({ error: 'You can only send files to friends' });

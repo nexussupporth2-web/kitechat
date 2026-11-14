@@ -32,6 +32,8 @@ export function networkRouter({ requireAuth, areFriends, isAdmin, io }: Deps) {
     const owner = data.users[p.ownerId];
     if (owner?.blocked && p.ownerId !== me.userId && !isAdmin(me)) return false;
     if (p.ownerId === me.userId) return true;
+    // Somebody shared it with me on purpose.
+    if (!feed && p.sharedWith?.some(s => s.userId === me.userId)) return true;
     // The admin can open a private post only when somebody reported it.
     if (!feed && isAdmin(me) && data.reports.some(r => r.postId === p.id)) return true;
     if (me.hidden?.includes(p.ownerId)) return false;
@@ -154,6 +156,49 @@ export function networkRouter({ requireAuth, areFriends, isAdmin, io }: Deps) {
     const posts = [];
     for (const p of page) posts.push(await view(me, p, cache));
     res.json({ posts, next: more ? page[page.length - 1].createdAt : null });
+  });
+
+  // ---------- one post, sharing and Received ----------
+
+  router.get('/network/posts/:id', requireAuth, async (req, res) => {
+    const me = res.locals.user as User;
+    const p = data.posts.find(x => x.id === req.params.id);
+    if (!p || !canSee(me, p)) return res.status(404).json({ error: 'Not found' });
+    res.json({ post: await view(me, p, new Map()) });
+  });
+
+  router.post('/network/posts/:id/share', requireAuth, (req, res) => {
+    const me = res.locals.user as User;
+    const p = data.posts.find(x => x.id === req.params.id);
+    if (!p || !canSee(me, p)) return res.status(404).json({ error: 'Not found' });
+    const to = typeof req.body?.userId === 'string' ? req.body.userId.trim().toUpperCase() : '';
+    const target = data.users[to];
+    if (!target || target.blocked || target.userId === me.userId) return res.status(404).json({ error: 'No such friend' });
+    if (!areFriends(me.userId, to)) return res.status(403).json({ error: 'You can share only with your friends' });
+    if (tooFast(me.userId, 20)) return res.status(429).json({ error: 'You are sharing too fast. Wait a moment.' });
+    if (p.ownerId !== to) {
+      p.sharedWith = p.sharedWith ?? [];
+      if (!p.sharedWith.some(s => s.userId === to && s.by === me.userId)) p.sharedWith.push({ userId: to, by: me.userId, at: Date.now() });
+      if (p.sharedWith.length > 300) p.sharedWith = p.sharedWith.slice(-300);
+      save();
+      io?.to(`user:${to}`).emit('post-shared', { postId: p.id, by: me.name });
+    }
+    res.json({ ok: true });
+  });
+
+  /** Photos and videos friends shared with me, newest first. */
+  router.get('/received', requireAuth, async (_req, res) => {
+    const me = res.locals.user as User;
+    const rows = data.posts
+      .filter(p => isNet(p) && !data.users[p.ownerId]?.blocked)
+      .map(p => ({ p, s: (p.sharedWith ?? []).filter(x => x.userId === me.userId).sort((a, b) => b.at - a.at)[0] }))
+      .filter(r => r.s)
+      .sort((a, b) => b.s!.at - a.s!.at)
+      .slice(0, 100);
+    const cache = new Map<string, string | null>();
+    const items = [];
+    for (const r of rows) items.push({ ...(await view(me, r.p, cache)), sharedBy: data.users[r.s!.by]?.name ?? 'Someone', sharedAt: r.s!.at });
+    res.json({ items });
   });
 
   // ---------- reactions ----------
@@ -362,7 +407,24 @@ export function networkRouter({ requireAuth, areFriends, isAdmin, io }: Deps) {
     const postIds = new Set(data.posts.map(p => p.id));
     purge(data.reports, r => r.reporterId === id || !postIds.has(r.postId));
     purge(data.shares, sh => sh.senderId === id || sh.recipientId === id, sh => addKey(sh.key));
-    purge(data.messages, m => m.senderId === id || m.recipientId === id, m => messageIndex.delete(m.id));
+    // Groups: take the person out; a group left empty is removed with its messages.
+    for (const g of data.groups) {
+      if (!g.members.includes(id)) continue;
+      g.members = g.members.filter(x => x !== id);
+      delete g.joined[id];
+      if (g.ownerId === id && g.members.length) g.ownerId = g.members[0];
+      for (const f of g.members) io?.to(`user:${f}`).emit('group-updated', { groupId: g.id });
+    }
+    const emptyGroups = new Set(data.groups.filter(g => g.members.length === 0).map(g => g.id));
+    data.groups = data.groups.filter(g => !emptyGroups.has(g.id));
+    purge(
+      data.messages,
+      m => m.senderId === id || m.recipientId === id || emptyGroups.has(m.recipientId),
+      m => {
+        messageIndex.delete(m.id);
+        if (m.media && !m.media.gone) addKey(m.media.key);
+      }
+    );
 
     const notify = new Set<string>(target.friends);
     for (const u of Object.values(data.users)) {
@@ -373,6 +435,8 @@ export function networkRouter({ requireAuth, areFriends, isAdmin, io }: Deps) {
       u.reqOut = (u.reqOut ?? []).filter(f => f !== id);
       u.hidden = (u.hidden ?? []).filter(f => f !== id);
       u.pinnedChats = (u.pinnedChats ?? []).filter(f => f !== id);
+      if (u.blockList) u.blockList = u.blockList.filter(f => f !== id);
+      if (u.reportedBy) u.reportedBy = u.reportedBy.filter(r => r.by !== id);
     }
     delete data.users[id];
     save();
